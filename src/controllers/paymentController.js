@@ -1,3 +1,4 @@
+// controllers/paymentController.js
 const Payment = require('../models/Payment');
 const Booking = require('../models/Booking');
 const Wallet = require('../models/Wallet');
@@ -24,14 +25,11 @@ try {
             key_secret: process.env.RAZORPAY_KEY_SECRET.trim()
         });
         console.log('✅ Razorpay initialized successfully');
-        console.log('✅ Razorpay Key ID:', process.env.RAZORPAY_KEY_ID.trim());
     } else {
         console.warn('⚠️ Razorpay keys missing. Payment features will be disabled.');
-        console.warn('Make sure RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are set in .env');
     }
 } catch (err) {
     console.error('❌ Failed to initialize Razorpay:', err.message);
-    console.error('❌ Full error:', err);
 }
 
 const getCommission = async () => {
@@ -39,25 +37,20 @@ const getCommission = async () => {
     return setting ? setting.value : 20;
 };
 
-// @desc    Create payment order for a booking (called from customer)
+// @desc    Create payment order for a booking
 // @route   POST /api/v1/payments/create-order
 exports.createOrder = asyncHandler(async (req, res) => {
     if (!razorpay) {
-        console.error('❌ Razorpay not initialized. Check your API keys.');
-        throw new ApiError(503, 'Payment service is not configured. Please contact support. (Razorpay not initialized)');
+        throw new ApiError(503, 'Payment service is not configured. Please contact support.');
     }
     
     const { bookingId } = req.body;
-    
-    if (!bookingId) {
-        throw new ApiError(400, 'Booking ID is required');
-    }
+    if (!bookingId) throw new ApiError(400, 'Booking ID is required');
     
     const booking = await Booking.findById(bookingId);
     if (!booking) throw new ApiError(404, 'Booking not found');
     if (booking.payment.status === 'paid') throw new ApiError(400, 'Payment already completed');
     
-    // ✅ Round to 2 decimal places then convert to paise
     const roundedTotal = roundTo2(booking.pricing.total);
     const amount = Math.round(roundedTotal * 100); // paise
     
@@ -72,16 +65,13 @@ exports.createOrder = asyncHandler(async (req, res) => {
         }
     };
     
-    console.log('🔄 Creating Razorpay order with options:', options);
-    
     try {
         const order = await razorpay.orders.create(options);
-        console.log('✅ Razorpay order created:', order.id);
         
         await Payment.create({
             booking: booking._id,
             customer: req.user._id,
-            provider: booking.provider,
+            provider: booking.provider,  // This is ServiceProvider._id
             amount: roundedTotal,
             razorpayOrderId: order.id,
             receipt: order.receipt,
@@ -104,11 +94,10 @@ exports.createOrder = asyncHandler(async (req, res) => {
 // @route   POST /api/v1/payments/verify
 exports.verifyPayment = asyncHandler(async (req, res) => {
     if (!razorpay) {
-        throw new ApiError(503, 'Payment service is not configured. Please contact support.');
+        throw new ApiError(503, 'Payment service is not configured.');
     }
     
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
-    
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
         throw new ApiError(400, 'Missing payment verification parameters');
     }
@@ -121,7 +110,6 @@ exports.verifyPayment = asyncHandler(async (req, res) => {
         .digest('hex');
     
     if (expectedSign !== razorpay_signature) {
-        console.error('❌ Invalid payment signature. Expected:', expectedSign, 'Got:', razorpay_signature);
         throw new ApiError(400, 'Invalid payment signature');
     }
     
@@ -137,10 +125,10 @@ exports.verifyPayment = asyncHandler(async (req, res) => {
     );
     if (!payment) throw new ApiError(404, 'Payment record not found');
     
+    // Get commission percentage
     const commissionPercentage = await getCommission();
     const totalAmount = payment.amount;
     
-    // ✅ Round to 2 decimal places
     const commissionAmount = roundTo2((totalAmount * commissionPercentage) / 100);
     const providerEarning = roundTo2(totalAmount - commissionAmount);
     
@@ -151,6 +139,7 @@ exports.verifyPayment = asyncHandler(async (req, res) => {
     };
     await payment.save();
     
+    // Update booking payment status
     const booking = await Booking.findByIdAndUpdate(
         payment.booking,
         {
@@ -162,24 +151,39 @@ exports.verifyPayment = asyncHandler(async (req, res) => {
         { new: true }
     );
     
-    // Credit provider wallet
-    let wallet = await Wallet.findOne({ user: payment.provider });
-    if (!wallet) wallet = await Wallet.create({ user: payment.provider });
+    // ✅ FIX: payment.provider stores ServiceProvider._id, need to get actual User._id
+    const serviceProvider = await ServiceProvider.findById(payment.provider);
+    if (!serviceProvider) {
+        console.error('❌ ServiceProvider not found for id:', payment.provider);
+        throw new ApiError(404, 'Provider not found');
+    }
+    const providerUserId = serviceProvider.user; // This is the actual User._id
+    
+    // Credit provider wallet using the correct user ID
+    let wallet = await Wallet.findOne({ user: providerUserId });
+    if (!wallet) {
+        wallet = await Wallet.create({ user: providerUserId });
+    }
+    
     wallet.balance = roundTo2(wallet.balance + providerEarning);
     wallet.totalEarnings = roundTo2(wallet.totalEarnings + providerEarning);
     wallet.transactions.push({
         type: 'credit',
         amount: providerEarning,
         description: `Earning from booking ${booking.bookingId} (${commissionPercentage}% commission deducted)`,
-        balance: wallet.balance
+        balance: wallet.balance,
+        status: 'completed'
     });
     await wallet.save();
     
     console.log('✅ Payment verified and wallet credited:', {
         bookingId: booking.bookingId,
-        amount: totalAmount,
+        totalAmount,
+        commissionPercentage: `${commissionPercentage}%`,
+        commissionAmount,
         providerEarning,
-        commissionAmount
+        providerUserId: providerUserId.toString(),
+        walletBalance: wallet.balance
     });
     
     new ApiResponse(200, { payment, wallet, booking }, 'Payment verified & wallet credited').send(res);
@@ -189,7 +193,6 @@ exports.verifyPayment = asyncHandler(async (req, res) => {
 // @route   POST /api/v1/payments/webhook
 exports.webhook = asyncHandler(async (req, res) => {
     const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-    
     if (!secret) {
         console.warn('⚠️ RAZORPAY_WEBHOOK_SECRET not set, skipping signature verification');
         return res.status(200).json({ status: 'ok' });
@@ -248,7 +251,7 @@ exports.getPaymentHistory = asyncHandler(async (req, res) => {
     }, 'Payment history fetched').send(res);
 });
 
-// @desc    Withdraw from wallet (deprecated - use withdrawal request flow)
+// @desc    Withdraw from wallet (deprecated)
 // @route   POST /api/v1/payments/withdraw
 exports.withdrawFromWallet = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Use withdrawal request flow instead');
