@@ -22,6 +22,8 @@ router.get('/reports/provider-earnings', adminController.getProviderEarnings);
 // User Management
 router.get('/users', adminController.getAllUsers);
 router.get('/users/:id', adminController.getUserDetails);
+router.put('/users/:id', adminController.updateUserByAdmin);          // ✅ NEW
+router.get('/users/:id/stats', adminController.getUserStats);         // ✅ NEW
 router.patch('/users/:id/status', 
     validate([
         body('status').isIn(['active', 'inactive', 'suspended']).withMessage('Invalid status')
@@ -31,9 +33,7 @@ router.patch('/users/:id/status',
 
 // Provider Management
 router.get('/providers', adminController.getAllProviders);
-router.get('/providers/status', adminController.getProviderStatusList);  // ✅ NEW
-
-// ✅ Provider Earnings & Ratings
+router.get('/providers/status', adminController.getProviderStatusList);
 router.get('/provider-earnings', adminController.getProviderEarningsList);
 router.get('/provider-earnings/:providerId', adminController.getProviderEarningsDetails);
 
@@ -103,5 +103,9 @@ router.patch('/withdrawals/:id/reject',
     ]),
     adminController.rejectWithdrawal
 );
+
+// ✅ NEW: Notifications routes (push & sms)
+router.post('/notifications/push', adminController.sendPushNotification);
+router.post('/notifications/sms', adminController.sendSmsAlert);
 
 module.exports = router;

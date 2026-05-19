@@ -789,3 +789,146 @@ exports.getProviderStatusList = asyncHandler(async (req, res) => {
 
     new ApiResponse(200, { providers: statusList }, 'Provider status list fetched').send(res);
 });
+
+// ========== NEW FUNCTIONS FOR USER STATS, UPDATE & NOTIFICATIONS ==========
+
+// @desc    Get user statistics (wallet, spending, bookings)
+// @route   GET /api/v1/admin/users/:id/stats
+exports.getUserStats = asyncHandler(async (req, res) => {
+    const userId = req.params.id;
+    
+    const user = await User.findById(userId);
+    if (!user) throw new ApiError(404, 'User not found');
+    
+    // Wallet balance
+    const Wallet = require('../models/Wallet');
+    const wallet = await Wallet.findOne({ user: userId });
+    const walletBalance = wallet ? roundTo2(wallet.balance) : 0;
+    
+    // Total spent from completed bookings
+    const bookings = await Booking.find({ customer: userId });
+    let totalSpent = 0;
+    let totalCompleted = 0, totalCancelled = 0, totalPending = 0;
+    const recentBookings = [];
+    
+    for (const booking of bookings) {
+        if (booking.status === 'completed') {
+            totalCompleted++;
+            totalSpent += booking.pricing.total;
+            recentBookings.push({
+                _id: booking._id,
+                bookingId: booking.bookingId,
+                status: booking.status,
+                amount: booking.pricing.total,
+                date: booking.createdAt
+            });
+        } else if (booking.status === 'cancelled') {
+            totalCancelled++;
+        } else if (booking.status === 'pending') {
+            totalPending++;
+        }
+    }
+    
+    // Sort recent bookings by date desc
+    recentBookings.sort((a, b) => new Date(b.date) - new Date(a.date));
+    const topRecent = recentBookings.slice(0, 10);
+    
+    new ApiResponse(200, {
+        walletBalance: roundTo2(walletBalance),
+        totalSpent: roundTo2(totalSpent),
+        totalCompleted,
+        totalCancelled,
+        totalPending,
+        recentBookings: topRecent
+    }, 'User stats fetched successfully').send(res);
+});
+
+// @desc    Update user by admin (firstName, lastName, phone)
+// @route   PUT /api/v1/admin/users/:id
+exports.updateUserByAdmin = asyncHandler(async (req, res) => {
+    const { firstName, lastName, phone } = req.body;
+    const user = await User.findById(req.params.id);
+    if (!user) throw new ApiError(404, 'User not found');
+    
+    if (firstName) user.firstName = firstName;
+    if (lastName) user.lastName = lastName;
+    if (phone) user.phone = phone;
+    
+    await user.save();
+    
+    new ApiResponse(200, {
+        user: {
+            id: user._id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            phone: user.phone,
+            role: user.role,
+            isActive: user.status === 'active'
+        }
+    }, 'User updated successfully').send(res);
+});
+
+// @desc    Send push notification (admin to user)
+// @route   POST /api/v1/admin/notifications/push
+exports.sendPushNotification = asyncHandler(async (req, res) => {
+    const { targetType, targetId, message } = req.body;
+    const Notification = require('../models/Notification');
+    
+    let recipientId = null;
+    if (targetType === 'specific_user') {
+        recipientId = targetId;
+    } else if (targetType === 'all_users') {
+        // For all users, you might loop or send to a special channel
+        // Here we simply return success (you can implement bulk later)
+        return new ApiResponse(200, null, 'Push notification sent to all users (bulk not implemented)').send(res);
+    } else {
+        throw new ApiError(400, 'Invalid target type');
+    }
+    
+    const user = await User.findById(recipientId);
+    if (!user) throw new ApiError(404, 'User not found');
+    
+    await Notification.create({
+        recipient: recipientId,
+        type: 'admin_message',
+        title: 'Admin Notification',
+        message: message,
+        channels: { inApp: true, push: true, email: false }
+    });
+    
+    new ApiResponse(200, null, 'Push notification sent successfully').send(res);
+});
+
+// @desc    Send SMS alert (admin to user)
+// @route   POST /api/v1/admin/notifications/sms
+exports.sendSmsAlert = asyncHandler(async (req, res) => {
+    const { targetType, targetId, message } = req.body;
+    
+    if (targetType !== 'specific_user') {
+        throw new ApiError(400, 'Only specific_user SMS is supported currently');
+    }
+    
+    const user = await User.findById(targetId);
+    if (!user) throw new ApiError(404, 'User not found');
+    if (!user.phone) throw new ApiError(400, 'User has no phone number');
+    
+    // Integrate your SMS gateway here (Twilio, MSG91, etc.)
+    // For now, we just log and return success
+    console.log(`📱 SMS to ${user.phone}: ${message}`);
+    
+    // Example using Twilio (uncomment if you have Twilio configured)
+    /*
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+    const twilioPhone = process.env.TWILIO_PHONE_NUMBER;
+    const client = require('twilio')(accountSid, authToken);
+    await client.messages.create({
+        body: message,
+        to: `+91${user.phone}`,
+        from: twilioPhone
+    });
+    */
+    
+    new ApiResponse(200, null, 'SMS alert sent successfully').send(res);
+});

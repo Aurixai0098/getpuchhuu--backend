@@ -511,7 +511,7 @@ exports.markNotificationRead = asyncHandler(async (req, res) => {
     new ApiResponse(200, { notification }, 'Marked as read').send(res);
 });
 
-// ========== NEW: HEARTBEAT (ONLINE STATUS) ==========
+// ========== HEARTBEAT (ONLINE STATUS) ==========
 // @desc    Update provider heartbeat (keeps lastActive timestamp)
 // @route   POST /api/v1/providers/heartbeat
 exports.updateHeartbeat = asyncHandler(async (req, res) => {
@@ -522,4 +522,48 @@ exports.updateHeartbeat = asyncHandler(async (req, res) => {
     provider.lastActive = new Date();
     await provider.save({ validateBeforeSave: false });
     new ApiResponse(200, { lastActive: provider.lastActive }, 'Heartbeat updated').send(res);
+});
+
+// ========== FEATURED PROVIDERS FOR HOMEPAGE (PUBLIC) ==========
+// @desc    Get featured providers for homepage with earnings, completed jobs, etc.
+// @route   GET /api/v1/providers/featured
+exports.getFeaturedProviders = asyncHandler(async (req, res) => {
+    const { limit = 20 } = req.query;
+    
+    // Find verified providers with at least one completed booking
+    const providers = await ServiceProvider.find({
+        verificationStatus: 'verified',
+        isAvailable: true,
+        'stats.completedBookings': { $gt: 0 }
+    })
+    .populate('user', 'firstName lastName avatar phone email')
+    .sort('-rating.average')
+    .limit(parseInt(limit));
+
+    const Wallet = require('../models/Wallet');
+    const providerData = await Promise.all(providers.map(async (provider) => {
+        const wallet = await Wallet.findOne({ user: provider.user._id });
+        const totalEarnings = wallet ? wallet.totalEarnings : 0;
+        const completedJobs = provider.stats?.completedBookings || 0;
+        const experienceYears = provider.experience?.years || 0;
+        const avgRating = provider.rating?.average || 0;
+        const reviewCount = provider.rating?.count || 0;
+        const isOnline = provider.isAvailable && provider.lastActive > new Date(Date.now() - 1 * 60 * 1000);
+
+        return {
+            id: provider._id,
+            businessName: provider.businessName || `${provider.user.firstName} ${provider.user.lastName}`,
+            ownerName: `${provider.user.firstName} ${provider.user.lastName}`,
+            avatar: provider.user.avatar?.url || `https://ui-avatars.com/api/?name=${encodeURIComponent(provider.businessName || provider.user.firstName)}&background=10b981&color=fff`,
+            rating: avgRating,
+            reviewCount: reviewCount,
+            isOnline: isOnline,
+            isVerified: true,
+            completedJobs,
+            totalEarnings,
+            experienceYears
+        };
+    }));
+
+    new ApiResponse(200, { providers: providerData }, 'Featured providers fetched').send(res);
 });

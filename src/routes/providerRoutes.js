@@ -10,14 +10,15 @@ const { upload } = require('../config/cloudinary');
 
 const router = express.Router();
 
-// Public routes
+// ========== PUBLIC ROUTES ==========
 router.get('/search', providerController.searchProviders);
 router.get('/:id/public', providerController.getPublicProfile);
+router.get('/featured', providerController.getFeaturedProviders);   // ✅ NEW: for homepage
 
-// Protected routes (require authentication)
+// ========== PROTECTED ROUTES ==========
 router.use(protect);
 
-// ✅ Heartbeat endpoint – provider calls this every 30 seconds to stay online
+// Heartbeat endpoint – provider calls this every 30 seconds to stay online
 router.post('/heartbeat', authorize('provider'), providerController.updateHeartbeat);
 
 // Provider registration (customer to provider)
