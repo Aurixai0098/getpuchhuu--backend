@@ -1,8 +1,18 @@
 const Category = require('../models/Category');
 const SubService = require('../models/SubService');
+const Review = require('../models/Review');
+const ServiceProvider = require('../models/ServiceProvider');
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../utils/asyncHandler');
+
+// Helper: Get reviews for a service
+const getServiceReviews = async (serviceId, limit = 10) => {
+  return await Review.find({ service: serviceId, status: 'approved' })
+    .populate('customer', 'firstName lastName avatar')
+    .sort('-createdAt')
+    .limit(limit);
+};
 
 // @desc    Get all categories
 // @route   GET /api/v1/services/categories
@@ -17,7 +27,7 @@ exports.getCategories = asyncHandler(async (req, res) => {
     new ApiResponse(200, { categories }, 'Categories fetched').send(res);
 });
 
-// @desc    Get single category with subcategories
+// @desc    Get single category with subcategories and services with rating stats
 // @route   GET /api/v1/services/categories/:slug
 exports.getCategoryBySlug = asyncHandler(async (req, res) => {
     const category = await Category.findOne({ 
@@ -30,12 +40,58 @@ exports.getCategoryBySlug = asyncHandler(async (req, res) => {
     }
     
     // Get services under this category
-    const services = await SubService.find({
+    let services = await SubService.find({
         category: category._id,
         isActive: true
     }).sort('sortOrder');
     
-    new ApiResponse(200, { category, services }, 'Category fetched').send(res);
+    // Fetch aggregated category rating stats
+    const serviceIds = services.map(s => s._id);
+    let ratingStats = { average: 0, count: 0, five: 0, four: 0, three: 0, two: 0, one: 0 };
+    
+    if (serviceIds.length > 0) {
+        const categoryStats = await Review.aggregate([
+            { $match: { service: { $in: serviceIds }, status: 'approved' } },
+            {
+                $group: {
+                    _id: null,
+                    average: { $avg: '$rating.overall' },
+                    count: { $sum: 1 },
+                    five: { $sum: { $cond: [{ $eq: ['$rating.overall', 5] }, 1, 0] } },
+                    four: { $sum: { $cond: [{ $eq: ['$rating.overall', 4] }, 1, 0] } },
+                    three: { $sum: { $cond: [{ $eq: ['$rating.overall', 3] }, 1, 0] } },
+                    two: { $sum: { $cond: [{ $eq: ['$rating.overall', 2] }, 1, 0] } },
+                    one: { $sum: { $cond: [{ $eq: ['$rating.overall', 1] }, 1, 0] } }
+                }
+            }
+        ]);
+        if (categoryStats.length > 0) {
+            ratingStats = categoryStats[0];
+        }
+    }
+
+    // Attach rating stats from Review model to each individual service
+    const servicesWithRating = await Promise.all(services.map(async (service) => {
+        const stats = await Review.aggregate([
+            { $match: { service: service._id, status: 'approved' } },
+            {
+                $group: {
+                    _id: null,
+                    avgRating: { $avg: '$rating.overall' },
+                    count: { $sum: 1 }
+                }
+            }
+        ]);
+        const serviceObj = service.toObject();
+        serviceObj.rating = {
+            average: stats[0]?.avgRating || 0,
+            count: stats[0]?.count || 0
+        };
+        return serviceObj;
+    }));
+    
+    // Send category, services, and the new aggregate ratingStats
+    new ApiResponse(200, { category, services: servicesWithRating, ratingStats }, 'Category fetched').send(res);
 });
 
 // @desc    Get all services
@@ -75,7 +131,7 @@ exports.getServices = asyncHandler(async (req, res) => {
     }, 'Services fetched').send(res);
 });
 
-// @desc    Get single service
+// @desc    Get single service with reviews
 // @route   GET /api/v1/services/:slug
 exports.getServiceBySlug = asyncHandler(async (req, res) => {
     const service = await SubService.findOne({ 
@@ -87,6 +143,21 @@ exports.getServiceBySlug = asyncHandler(async (req, res) => {
         throw new ApiError(404, 'Service not found');
     }
     
+    // Get real reviews
+    const reviews = await getServiceReviews(service._id, 10);
+    
+    // Get rating stats from reviews
+    const ratingStats = await Review.aggregate([
+        { $match: { service: service._id, status: 'approved' } },
+        {
+            $group: {
+                _id: null,
+                average: { $avg: '$rating.overall' },
+                count: { $sum: 1 }
+            }
+        }
+    ]);
+    
     // Get related services
     const relatedServices = await SubService.find({
         category: service.category,
@@ -95,7 +166,6 @@ exports.getServiceBySlug = asyncHandler(async (req, res) => {
     }).limit(5);
     
     // Get providers for this service
-    const ServiceProvider = require('../models/ServiceProvider');
     const providers = await ServiceProvider.find({
         'services.subServices': service._id,
         verificationStatus: 'verified',
@@ -104,10 +174,18 @@ exports.getServiceBySlug = asyncHandler(async (req, res) => {
         .populate('user', 'firstName lastName avatar')
         .limit(10);
     
+    // Prepare service object with rating and reviews
+    const serviceObj = service.toObject();
+    serviceObj.rating = {
+        average: ratingStats[0]?.average || 0,
+        count: ratingStats[0]?.count || 0
+    };
+    
     new ApiResponse(200, {
-        service,
+        service: serviceObj,
         relatedServices,
-        providers
+        providers,
+        reviews
     }, 'Service fetched').send(res);
 });
 
