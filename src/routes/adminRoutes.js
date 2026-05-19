@@ -3,6 +3,7 @@
 const express = require('express');
 const { body, query } = require('express-validator');
 const adminController = require('../controllers/adminController');
+const withdrawalController = require('../controllers/withdrawalController'); // ✅ NEW
 const { protect, authorize } = require('../middleware/auth');
 const validate = require('../middleware/validate');
 
@@ -89,8 +90,8 @@ router.put('/settings/commission',
     adminController.updateCommissionSettings
 );
 
-// Withdrawal Management
-router.get('/withdrawals', adminController.getAllWithdrawals);
+// Withdrawal Management (existing) - FIXED: now uses withdrawalController.getAllWithdrawalRequests
+router.get('/withdrawals', withdrawalController.getAllWithdrawalRequests);
 router.patch('/withdrawals/:id/approve',
     validate([
         body('transactionId').notEmpty().withMessage('Transaction ID is required')
@@ -103,6 +104,11 @@ router.patch('/withdrawals/:id/reject',
     ]),
     adminController.rejectWithdrawal
 );
+
+// ✅ NEW: Enhanced Withdrawal Management Routes (using withdrawalController)
+router.patch('/withdrawals/:id/status', withdrawalController.updateWithdrawalStatus);
+router.get('/provider-wallets', withdrawalController.getAllProviderWallets);
+router.get('/providers/:providerId/withdrawals', withdrawalController.getProviderWithdrawals);
 
 // ✅ NEW: Notifications routes (push & sms)
 router.post('/notifications/push', adminController.sendPushNotification);

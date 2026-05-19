@@ -255,4 +255,4 @@ exports.getPaymentHistory = asyncHandler(async (req, res) => {
 // @route   POST /api/v1/payments/withdraw
 exports.withdrawFromWallet = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Use withdrawal request flow instead');
-});
+}); 
