@@ -5,8 +5,8 @@ const ServiceProvider = require('../models/ServiceProvider');
 const Chat = require('../models/Chat');
 const LocationTracking = require('../models/LocationTracking');
 
-const userSockets = new Map();
-const providerSockets = new Map();
+const userSockets = new Map();   // userId -> socket.id (सिर्फ डिबगिंग के लिए)
+const providerSockets = new Map(); // provider userId -> socket.id
 
 module.exports = (io) => {
   io.on('connection', (socket) => {
@@ -15,20 +15,24 @@ module.exports = (io) => {
     socket.on('register', async (data) => {
       const { userId, role } = data;
       if (userId) {
+        const uid = userId.toString();
+
+        // सभी यूज़र अपने कमरे में जुड़ें
+        socket.join(`user_${uid}`);
+        userSockets.set(uid, socket.id);
+
         if (role === 'provider') {
-          providerSockets.set(userId, socket.id);
-          socket.join(`provider_${userId}`);
-          console.log(`✅ Provider ${userId} registered`);
-        } else {
-          userSockets.set(userId, socket.id);
-          socket.join(`user_${userId}`);
-          console.log(`✅ User ${userId} registered`);
+          providerSockets.set(uid, socket.id);
+          socket.join(`provider_${uid}`);
         }
+
         socket.userId = userId;
         socket.role = role;
+        console.log(`✅ User ${uid} registered as ${role}`);
       }
     });
 
+    // ---------- बुकिंग स्वीकार ----------
     socket.on('accept-booking', async (data) => {
       const { bookingId, providerId } = data;
       try {
@@ -45,26 +49,33 @@ module.exports = (io) => {
         const provider = await ServiceProvider.findById(providerId).populate('user', 'firstName lastName phone avatar');
         if (!provider) throw new Error('Provider not found');
 
-        const userSocketId = userSockets.get(booking.customer._id.toString());
-        if (userSocketId) {
-          io.to(userSocketId).emit('booking-accepted', {
-            bookingId: booking._id,
-            provider: {
-              id: provider._id,
-              businessName: provider.businessName,
-              phone: provider.user?.phone,
-              avatar: provider.user?.avatar?.url,
-              name: `${provider.user?.firstName} ${provider.user?.lastName}`,
-            },
-          });
-        }
+        // ✅ कस्टमर के कमरे में भेजें (सभी टैब को मिलेगा)
+        io.to(`user_${booking.customer._id.toString()}`).emit('booking-accepted', {
+          bookingId: booking._id,
+          provider: {
+            id: provider._id,
+            businessName: provider.businessName,
+            phone: provider.user?.phone,
+            avatar: provider.user?.avatar?.url,
+            name: `${provider.user?.firstName} ${provider.user?.lastName}`,
+          },
+        });
+
         socket.emit('accept-success', { bookingId, status: 'confirmed' });
+
+        // दूसरे प्रोवाइडर्स को बताएं (room का इस्तेमाल नहीं, क्योंकि सिर्फ providerSockets से सीधे भेजना है)
+        for (const [provUserId, sockId] of providerSockets.entries()) {
+          if (provUserId !== providerId.toString()) {
+            io.to(sockId).emit('booking-taken', { bookingId });
+          }
+        }
       } catch (err) {
         console.error(err);
         socket.emit('error', { message: err.message });
       }
     });
 
+    // ---------- लोकेशन अपडेट ----------
     socket.on('update-location', async (data) => {
       const { bookingId, lat, lng } = data;
       const providerUserId = socket.userId;
@@ -80,18 +91,17 @@ module.exports = (io) => {
         });
         const booking = await Booking.findById(bookingId);
         if (booking) {
-          const userSocketId = userSockets.get(booking.customer.toString());
-          if (userSocketId) {
-            io.to(userSocketId).emit('provider-location-update', {
-              bookingId, lat, lng, timestamp: new Date(),
-            });
-          }
+          // ✅ कस्टमर के कमरे में भेजें
+          io.to(`user_${booking.customer.toString()}`).emit('provider-location-update', {
+            bookingId, lat, lng, timestamp: new Date(),
+          });
         }
       } catch (err) {
         console.error(err);
       }
     });
 
+    // ---------- मैसेज भेजें ----------
     socket.on('send-message', async (data) => {
       const { bookingId, message, senderId, senderRole } = data;
       if (!message || !message.trim()) return;
@@ -102,8 +112,11 @@ module.exports = (io) => {
           senderRole,
           message: message.trim(),
         });
+
         const booking = await Booking.findById(bookingId);
         if (!booking) return;
+
+        // रिसीवर का userId निकालें
         let receiverId = null;
         if (senderRole === 'customer') {
           const provider = await ServiceProvider.findById(booking.provider).populate('user');
@@ -111,9 +124,10 @@ module.exports = (io) => {
         } else {
           receiverId = booking.customer;
         }
-        const receiverSocketId = userSockets.get(receiverId?.toString());
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit('new-message', {
+
+        // ✅ रिसीवर के कमरे में भेजें (सभी टैब को मिलेगा)
+        if (receiverId) {
+          io.to(`user_${receiverId.toString()}`).emit('new-message', {
             bookingId,
             message: chat.message,
             senderId,
@@ -122,6 +136,8 @@ module.exports = (io) => {
             chatId: chat._id,
           });
         }
+
+        // भेजने वाले को कन्फर्मेशन
         socket.emit('message-sent', chat);
       } catch (err) {
         console.error(err);
@@ -129,11 +145,15 @@ module.exports = (io) => {
       }
     });
 
+    // ---------- डिस्कनेक्ट ----------
     socket.on('disconnect', () => {
       console.log('🔌 Client disconnected:', socket.id);
       if (socket.userId) {
-        if (socket.role === 'provider') providerSockets.delete(socket.userId);
-        else userSockets.delete(socket.userId);
+        const uid = socket.userId.toString();
+        userSockets.delete(uid);
+        if (socket.role === 'provider') {
+          providerSockets.delete(uid);
+        }
       }
     });
   });
