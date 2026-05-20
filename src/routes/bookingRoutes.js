@@ -31,8 +31,7 @@ router.patch('/:id/reschedule', bookingController.rescheduleBooking);
 // Provider routes
 router.patch('/:id/confirm', authorize('provider'), bookingController.confirmBooking);
 router.patch('/:id/start', authorize('provider'), bookingController.startService);
-
-// ✅ Accept booking – both POST and PATCH for compatibility
+// ✅ Accept booking – both POST and PATCH
 router.post('/:id/accept', authorize('provider'), bookingController.acceptBooking);
 router.patch('/:id/accept', authorize('provider'), bookingController.acceptBooking);
 
