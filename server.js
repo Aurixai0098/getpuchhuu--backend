@@ -11,7 +11,9 @@ console.log('============================\n');
 
 const app = require('./src/app');
 const connectDB = require('./src/config/database');
-// const redisClient = require('./src/config/redis'); // ✅ COMMENT KARO
+const http = require('http');
+const { Server } = require('socket.io');
+const socketManager = require('./src/socket/socketManager');
 
 // ✅ Helper function to get local IP address
 function getLocalIp() {
@@ -19,7 +21,6 @@ function getLocalIp() {
     const nets = networkInterfaces();
     for (const name of Object.keys(nets)) {
         for (const net of nets[name]) {
-            // Skip internal (localhost) and non-IPv4
             if (net.family === 'IPv4' && !net.internal) {
                 return net.address;
             }
@@ -41,10 +42,6 @@ const startServer = async () => {
         await connectDB();
         console.log('📦 MongoDB Connected Successfully');
 
-        // ✅ REDIS KO COMMENT KARO
-        // await redisClient.connect();
-        // console.log('🔴 Redis Connected Successfully');
-
         const PORT = process.env.PORT || 5000;
         const localIp = getLocalIp();
         
@@ -57,6 +54,16 @@ const startServer = async () => {
             console.log(`💚 Health Check: http://localhost:${PORT}/api/health\n`);
             console.log(`📱 To connect from other devices, use: http://${localIp}:${PORT}`);
         });
+
+        // Initialize Socket.IO
+        const io = new Server(server, {
+            cors: {
+                origin: '*', // In production, restrict to your frontend URL
+                credentials: true,
+            },
+        });
+        app.set('io', io);
+        socketManager(io);
 
         // Handle unhandled promise rejections
         process.on('unhandledRejection', (err) => {

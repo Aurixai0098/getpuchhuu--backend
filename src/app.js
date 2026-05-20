@@ -7,7 +7,6 @@ const rateLimit = require('express-rate-limit');
 const errorHandler = require('./middleware/errorHandler');
 const ApiError = require('./utils/ApiError');
 
-// ✅ Ensure dotenv is loaded
 require('dotenv').config({ override: true });
 
 // Import Routes
@@ -20,16 +19,17 @@ const reviewRoutes = require('./routes/reviewRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const paymentController = require('./controllers/paymentController');
+const chatRoutes = require('./routes/chatRoutes');
+const locationRoutes = require('./routes/locationRoutes');
 
 const app = express();
 app.set('trust proxy', 1);
 
-// ✅ Helper function to get local network IPs dynamically
+// Helper function to get local network IPs dynamically
 const getLocalNetworkIPs = () => {
     const { networkInterfaces } = require('os');
     const nets = networkInterfaces();
     const ips = [];
-    
     for (const name of Object.keys(nets)) {
         for (const net of nets[name]) {
             if (net.family === 'IPv4' && !net.internal) {
@@ -43,7 +43,7 @@ const getLocalNetworkIPs = () => {
     return ips;
 };
 
-// ✅ Updated CORS configuration - Allow all network devices
+// Updated CORS configuration - allow all network devices
 const allowedOrigins = [
     'http://localhost:5500',
     'http://127.0.0.1:5500',
@@ -54,9 +54,7 @@ const allowedOrigins = [
     'http://127.0.0.1:5173',
     'https://ghar-seva-client.vercel.app',
     process.env.FRONTEND_URL,
-    // ✅ Add all local network IPs dynamically
     ...getLocalNetworkIPs(),
-    // ✅ Allow any local network IP (development only)
     /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}:\d{4}$/,
     /^http:\/\/10\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{4}$/,
     /^http:\/\/172\.(1[6-9]|2[0-9]|3[0-1])\.\d{1,3}\.\d{1,3}:\d{4}$/,
@@ -67,37 +65,19 @@ console.log('✅ CORS Allowed Origins:', allowedOrigins.filter(o => typeof o ===
 // Security Middleware - CORS with dynamic origin
 app.use(cors({
     origin: function (origin, callback) {
-        // Allow requests with no origin (like mobile apps, Postman, curl)
-        if (!origin) {
-            return callback(null, true);
-        }
-        
-        // Check if origin is allowed
+        if (!origin) return callback(null, true);
         let isAllowed = false;
-        
         for (const allowed of allowedOrigins) {
             if (allowed instanceof RegExp) {
-                if (allowed.test(origin)) {
-                    isAllowed = true;
-                    break;
-                }
-            } else if (allowed === origin) {
-                isAllowed = true;
-                break;
-            }
+                if (allowed.test(origin)) { isAllowed = true; break; }
+            } else if (allowed === origin) { isAllowed = true; break; }
         }
-        
-        // In development, allow any origin but log it
         if (process.env.NODE_ENV === 'development') {
-            if (!isAllowed) {
-                console.log(`⚠️ CORS: Allowing development origin: ${origin}`);
-            }
+            if (!isAllowed) console.log(`⚠️ CORS: Allowing development origin: ${origin}`);
             return callback(null, true);
         }
-        
-        if (isAllowed) {
-            callback(null, true);
-        } else {
+        if (isAllowed) callback(null, true);
+        else {
             console.warn(`❌ CORS blocked origin: ${origin}`);
             callback(new Error('Not allowed by CORS'));
         }
@@ -109,7 +89,7 @@ app.use(cors({
     optionsSuccessStatus: 200
 }));
 
-// Rate Limiting - Disabled in development
+// Rate Limiting
 const isDevelopment = process.env.NODE_ENV === 'development';
 const limiter = rateLimit({
     windowMs: 1 * 60 * 1000,
@@ -118,20 +98,17 @@ const limiter = rateLimit({
 });
 app.use('/api', limiter);
 
-// IMPORTANT: Webhook must be BEFORE express.json() middleware
+// Webhook before JSON parser
 app.post('/api/v1/payments/webhook', express.raw({ type: 'application/json' }), paymentController.webhook);
 
-// Body Parser
+// Body parser
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
-// Request Logging
-if (process.env.NODE_ENV === 'development') {
-    app.use(morgan('dev'));
-}
+if (process.env.NODE_ENV === 'development') app.use(morgan('dev'));
 
-// Health Check
+// Health check
 app.get('/api/health', (req, res) => {
     res.status(200).json({
         status: 'success',
@@ -142,15 +119,13 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// Debug route to check env variables (remove in production)
+// Debug route (dev only)
 if (process.env.NODE_ENV === 'development') {
     app.get('/api/v1/debug/env', (req, res) => {
         res.json({
             razorpay_key_exists: !!process.env.RAZORPAY_KEY_ID,
             razorpay_secret_exists: !!process.env.RAZORPAY_KEY_SECRET,
-            razorpay_key_prefix: process.env.RAZORPAY_KEY_ID ? process.env.RAZORPAY_KEY_ID.substring(0, 10) + '...' : null,
             node_env: process.env.NODE_ENV,
-            mongodb_connected: true,
             client_ip: req.ip,
             client_origin: req.headers.origin
         });
@@ -166,6 +141,8 @@ app.use('/api/v1/bookings', bookingRoutes);
 app.use('/api/v1/reviews', reviewRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/payments', paymentRoutes);
+app.use('/api/v1/chat', chatRoutes);
+app.use('/api/v1/location', locationRoutes);
 
 // 404 Handler
 app.use((req, res, next) => {

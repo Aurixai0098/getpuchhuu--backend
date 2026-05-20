@@ -56,7 +56,8 @@ const bookingSchema = new mongoose.Schema({
   provider: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'ServiceProvider',
-    required: true
+    required: false,        // ✅ changed to optional for matching
+    default: null
   },
   category: {
     type: mongoose.Schema.Types.ObjectId,
@@ -96,7 +97,8 @@ const bookingSchema = new mongoose.Schema({
       'in_progress',
       'completed',
       'cancelled',
-      'refunded'
+      'refunded',
+      'searching'
     ],
     default: 'pending'
   },
@@ -155,6 +157,11 @@ const bookingSchema = new mongoose.Schema({
       default: false
     }
   },
+  offers: [{
+    provider: { type: mongoose.Schema.Types.ObjectId, ref: 'ServiceProvider' },
+    offeredAt: { type: Date, default: Date.now },
+    status: { type: String, enum: ['pending', 'accepted', 'rejected'], default: 'pending' }
+  }],
   actualTimes: {
     providerArrived: Date,
     serviceStarted: Date,
@@ -182,7 +189,6 @@ const bookingSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
-// ✅ Pre-save middleware (Mongoose 7+ style)
 bookingSchema.pre('save', async function() {
   if (this.isNew && !this.bookingId) {
     const date = new Date();
@@ -192,7 +198,6 @@ bookingSchema.pre('save', async function() {
   }
 });
 
-// ✅ Static method for safe booking creation
 bookingSchema.statics.createBooking = async function(data) {
   if (!data.bookingId) {
     const date = new Date();
@@ -203,7 +208,6 @@ bookingSchema.statics.createBooking = async function(data) {
   return this.create(data);
 };
 
-// Indexes
 bookingSchema.index({ customer: 1, status: 1 });
 bookingSchema.index({ provider: 1, status: 1 });
 bookingSchema.index({ scheduledDate: 1 });
