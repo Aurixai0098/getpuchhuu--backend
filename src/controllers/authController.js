@@ -6,11 +6,15 @@ const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../utils/asyncHandler');
 
-// Cookie options
-const cookieOptions = {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'None',
+// ✅ Cookie options for cross-domain (Render backend + Vercel frontend + iOS)
+const getCookieOptions = (isProduction = true) => {
+    return {
+        httpOnly: true,
+        secure: true,           // ✅ HTTPS ke liye zaroori (Render aur Vercel dono HTTPS use karte hain)
+        sameSite: 'none',       // ✅ Cross-domain cookies ke liye (different domains)
+        path: '/',
+        domain: undefined       // Don't set domain for cross-site
+    };
 };
 
 // @desc    Register user directly
@@ -35,7 +39,6 @@ exports.register = asyncHandler(async (req, res) => {
         status: 'active'
     };
     
-    // Add avatar if provided during registration
     if (avatarUrl) {
         userData.avatar = { url: avatarUrl, publicId: null };
     }
@@ -44,6 +47,7 @@ exports.register = asyncHandler(async (req, res) => {
 
     // Generate tokens
     const tokens = generateTokens(user._id);
+    const cookieOptions = getCookieOptions(process.env.NODE_ENV === 'production');
 
     // Set cookies
     res.cookie('accessToken', tokens.accessToken, {
@@ -96,6 +100,7 @@ exports.login = asyncHandler(async (req, res) => {
 
     // Generate tokens
     const tokens = generateTokens(user._id);
+    const cookieOptions = getCookieOptions(process.env.NODE_ENV === 'production');
 
     // Set cookies
     res.cookie('accessToken', tokens.accessToken, {
@@ -135,6 +140,7 @@ exports.getMe = asyncHandler(async (req, res) => {
 // @desc    Logout user / clear cookies
 // @route   POST /api/v1/auth/logout
 exports.logout = asyncHandler(async (req, res) => {
+    const cookieOptions = getCookieOptions(process.env.NODE_ENV === 'production');
     res.cookie('accessToken', 'none', {
         ...cookieOptions,
         maxAge: 5 * 1000
@@ -162,6 +168,7 @@ exports.refreshAccessToken = asyncHandler(async (req, res) => {
     }
 
     const tokens = generateTokens(user._id);
+    const cookieOptions = getCookieOptions(process.env.NODE_ENV === 'production');
     res.cookie('accessToken', tokens.accessToken, {
         ...cookieOptions,
         maxAge: 15 * 60 * 1000
@@ -205,7 +212,7 @@ exports.forgotPassword = asyncHandler(async (req, res) => {
     await user.save({ validateBeforeSave: false });
     
     // Create reset URL
-    const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
+    const resetUrl = `${process.env.FRONTEND_URL || 'https://ghar-seva-client.vercel.app'}/reset-password?token=${resetToken}`;
     
     // Send email
     const { sendEmail } = require('../utils/sendEmail');

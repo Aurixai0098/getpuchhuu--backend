@@ -1,12 +1,12 @@
-// ✅ DOTENV MUST BE FIRST - Environment variables load karo
+// server.js
 require('dotenv').config({ override: true });
 
-// Debug - Check if keys are loaded
 console.log('=== 🔧 ENVIRONMENT CHECK ===');
 console.log('RAZORPAY_KEY_ID:', process.env.RAZORPAY_KEY_ID ? '✅ Loaded' : '❌ Missing');
 console.log('RAZORPAY_KEY_SECRET:', process.env.RAZORPAY_KEY_SECRET ? '✅ Loaded' : '❌ Missing');
 console.log('NODE_ENV:', process.env.NODE_ENV || 'development');
 console.log('PORT:', process.env.PORT || 5000);
+console.log('FRONTEND_URL:', process.env.FRONTEND_URL || 'https://ghar-seva-client.vercel.app');
 console.log('============================\n');
 
 const app = require('./src/app');
@@ -15,7 +15,6 @@ const http = require('http');
 const { Server } = require('socket.io');
 const socketManager = require('./src/socket/socketManager');
 
-// ✅ Helper function to get local IP address
 function getLocalIp() {
     const { networkInterfaces } = require('os');
     const nets = networkInterfaces();
@@ -29,14 +28,12 @@ function getLocalIp() {
     return 'localhost';
 }
 
-// Handle Uncaught exceptions
 process.on('uncaughtException', (err) => {
     console.error(`UNCAUGHT EXCEPTION! 💥 Shutting down...`);
     console.error(err.name, err.message);
     process.exit(1);
 });
 
-// Connect to Database & Redis
 const startServer = async () => {
     try {
         await connectDB();
@@ -45,41 +42,77 @@ const startServer = async () => {
         const PORT = process.env.PORT || 5000;
         const localIp = getLocalIp();
         
-        // ✅ Bind to '0.0.0.0' to accept connections from any network device
-        const server = app.listen(PORT, '0.0.0.0', () => {
-            console.log(`\n🚀 Server running in ${process.env.NODE_ENV || 'development'} mode`);
-            console.log(`📍 Local: http://localhost:${PORT}`);
-            console.log(`📍 Network: http://${localIp}:${PORT}`);
-            console.log(`📍 API URL: http://localhost:${PORT}/api/v1`);
-            console.log(`💚 Health Check: http://localhost:${PORT}/api/health\n`);
-            console.log(`📱 To connect from other devices, use: http://${localIp}:${PORT}`);
-        });
+        const allowedOrigins = [
+            'https://ghar-seva-client.vercel.app',
+            process.env.FRONTEND_URL,
+            'http://localhost:5173',
+            'http://localhost:5174',
+            'http://localhost:5175',
+            'http://localhost:3000',
+            /^https:\/\/ghar-seva-client-.*\.vercel\.app$/,
+        ].filter(Boolean);
 
-        // Initialize Socket.IO
+        const server = http.createServer(app);
+
         const io = new Server(server, {
             cors: {
-                origin: '*', // In production, restrict to your frontend URL
+                origin: function(origin, callback) {
+                    if (!origin) return callback(null, true);
+                    let isAllowed = false;
+                    for (const allowed of allowedOrigins) {
+                        if (allowed instanceof RegExp) {
+                            if (allowed.test(origin)) {
+                                isAllowed = true;
+                                break;
+                            }
+                        } else if (allowed === origin) {
+                            isAllowed = true;
+                            break;
+                        }
+                    }
+                    if (process.env.NODE_ENV === 'development') {
+                        return callback(null, true);
+                    }
+                    if (isAllowed) {
+                        callback(null, true);
+                    } else {
+                        console.warn(`❌ CORS blocked origin: ${origin}`);
+                        callback(new Error('Not allowed by CORS'));
+                    }
+                },
                 credentials: true,
+                methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+                allowedHeaders: ['Content-Type', 'Authorization', 'Cookie', 'X-Requested-With', 'Accept'],
+                exposedHeaders: ['Set-Cookie']
             },
+            transports: ['websocket', 'polling'],
+            allowEIO3: true,
+            pingTimeout: 60000,
+            pingInterval: 25000,
+            path: '/socket.io/'
         });
+
         app.set('io', io);
         socketManager(io);
 
-        // Handle unhandled promise rejections
+        server.listen(PORT, '0.0.0.0', () => {
+            console.log(`\n🚀 Server running in ${process.env.NODE_ENV || 'development'} mode`);
+            console.log(`📍 Local: http://localhost:${PORT}`);
+            console.log(`📍 Network: http://${localIp}:${PORT}`);
+            console.log(`📍 Production URL: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}`);
+            console.log(`🔌 Socket.IO path: /socket.io/`);
+            console.log(`✅ CORS allowed origins: ${allowedOrigins.filter(o => typeof o === 'string').join(', ')}`);
+        });
+
         process.on('unhandledRejection', (err) => {
             console.error(`UNHANDLED REJECTION! 💥 Shutting down...`);
             console.error(err.name, err.message);
-            server.close(() => {
-                process.exit(1);
-            });
+            server.close(() => process.exit(1));
         });
 
-        // Graceful shutdown
         process.on('SIGTERM', () => {
             console.log('👋 SIGTERM RECEIVED. Shutting down gracefully');
-            server.close(() => {
-                console.log('💥 Process terminated!');
-            });
+            server.close(() => console.log('💥 Process terminated!'));
         });
 
     } catch (error) {
