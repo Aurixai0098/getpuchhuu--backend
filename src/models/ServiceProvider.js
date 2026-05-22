@@ -27,7 +27,16 @@ const serviceProviderSchema = new mongoose.Schema({
     serviceArea: {
         cities: [String],
         pincodes: [String],
-        coordinates: { latitude: Number, longitude: Number }
+        radius: { type: Number, default: 10 }, // km
+        coordinates: {
+            type: { type: String, enum: ['Point'], default: 'Point' },
+            coordinates: { type: [Number], default: [0, 0] }  // [longitude, latitude]
+        }
+    },
+    currentLocation: {
+        type: { type: String, enum: ['Point'], default: 'Point' },
+        coordinates: { type: [Number], default: null },
+        updatedAt: { type: Date, default: null }
     },
     documents: [{
         type: { type: String, enum: ['aadhar', 'pan', 'driving_license', 'certificate', 'other'] },
@@ -54,7 +63,7 @@ const serviceProviderSchema = new mongoose.Schema({
     verificationNote: String,
     verifiedAt: Date,
     isAvailable: { type: Boolean, default: false },
-    lastActive: { type: Date, default: Date.now },  // ✅ tracks last heartbeat
+    lastActive: { type: Date, default: Date.now },
     rating: {
         average: { type: Number, default: 0 },
         count: { type: Number, default: 0 },
@@ -74,11 +83,12 @@ const serviceProviderSchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
-// Indexes
+// Geospatial indexes
 serviceProviderSchema.index({ 'serviceArea.coordinates': '2dsphere' });
-serviceProviderSchema.index({ 'serviceArea.cities': 1 });
-serviceProviderSchema.index({ 'serviceArea.pincodes': 1 });
+serviceProviderSchema.index({ currentLocation: '2dsphere' });
+serviceProviderSchema.index({ lastActive: -1 });
 serviceProviderSchema.index({ verificationStatus: 1, isAvailable: 1 });
+serviceProviderSchema.index({ 'services.category': 1 });
 
 const ServiceProvider = mongoose.model('ServiceProvider', serviceProviderSchema);
 module.exports = ServiceProvider;

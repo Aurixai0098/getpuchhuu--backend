@@ -1,7 +1,7 @@
-// controllers/bookingController.js
 const Booking = require('../models/Booking');
 const ServiceProvider = require('../models/ServiceProvider');
 const SubService = require('../models/SubService');
+const User = require('../models/User'); // Added for email
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../utils/asyncHandler');
@@ -136,7 +136,7 @@ exports.createBooking = asyncHandler(async (req, res) => {
   new ApiResponse(201, { booking }, 'Booking created, waiting for provider acceptance').send(res);
 });
 
-// @desc    Accept booking by provider
+// @desc    Accept booking by provider (with email to customer)
 // @route   POST /api/v1/bookings/:id/accept (also PATCH)
 exports.acceptBooking = asyncHandler(async (req, res) => {
   const bookingId = req.params.id;
@@ -192,6 +192,36 @@ exports.acceptBooking = asyncHandler(async (req, res) => {
     reference: { model: 'Booking', id: booking._id },
     channels: { inApp: true, email: true }
   });
+
+  // Send email to customer
+  try {
+    const customer = await User.findById(booking.customer);
+    const emailHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head><meta charset="UTF-8"><title>Booking Accepted</title>
+      <style>body{font-family:Arial,sans-serif;background:#f4f4f4;margin:0;padding:20px}.container{max-width:500px;margin:0 auto;background:#fff;padding:30px;border-radius:12px}</style>
+      </head>
+      <body><div class="container">
+        <h2>Booking Accepted!</h2>
+        <p>Hello ${customer.firstName},</p>
+        <p>Your booking <strong>${booking.bookingId}</strong> has been accepted by <strong>${provider.businessName}</strong>.</p>
+        <p>You can now chat with the provider directly on our website.</p>
+        <a href="${process.env.FRONTEND_URL}/my-bookings?openChat=${booking._id}" style="display:inline-block;background:#10b981;color:white;padding:10px 20px;border-radius:8px;text-decoration:none;margin:20px 0">View Booking & Chat</a>
+        <p>The provider will contact you soon.</p>
+        <hr style="margin:20px 0">
+        <p style="color:#6b7280;font-size:12px">GharSeva – Your trusted home service partner</p>
+      </div></body>
+      </html>
+    `;
+    await sendEmail({
+      email: customer.email,
+      subject: `Booking ${booking.bookingId} Accepted`,
+      html: emailHtml
+    });
+  } catch (emailErr) {
+    console.error('Failed to send booking accepted email:', emailErr);
+  }
 
   new ApiResponse(200, { booking }, 'Booking accepted successfully').send(res);
 });

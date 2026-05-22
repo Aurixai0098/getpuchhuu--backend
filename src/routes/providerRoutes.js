@@ -1,5 +1,3 @@
-// routes/providerRoutes.js
-
 const express = require('express');
 const providerController = require('../controllers/providerController');
 const withdrawalController = require('../controllers/withdrawalController');
@@ -13,13 +11,17 @@ const router = express.Router();
 // ========== PUBLIC ROUTES ==========
 router.get('/search', providerController.searchProviders);
 router.get('/:id/public', providerController.getPublicProfile);
-router.get('/featured', providerController.getFeaturedProviders);   // ✅ NEW: for homepage
+router.get('/featured', providerController.getFeaturedProviders);
+router.get('/nearby', providerController.getNearbyProviders); // ✅ NEW ROUTE
 
 // ========== PROTECTED ROUTES ==========
 router.use(protect);
 
-// Heartbeat endpoint – provider calls this every 30 seconds to stay online
+// Heartbeat endpoint
 router.post('/heartbeat', authorize('provider'), providerController.updateHeartbeat);
+
+// ✅ Live location update endpoint
+router.post('/location', authorize('provider'), providerController.updateLocation);
 
 // Provider registration (customer to provider)
 router.post('/register', authorize('customer'), providerController.registerProvider);

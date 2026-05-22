@@ -1,4 +1,3 @@
-// src/models/Chat.js
 const mongoose = require('mongoose');
 
 const chatSchema = new mongoose.Schema({
@@ -20,6 +19,15 @@ const chatSchema = new mongoose.Schema({
   message: {
     type: String,
     required: true,
+  },
+  type: {
+    type: String,
+    enum: ['text', 'image'],
+    default: 'text',
+  },
+  imageUrl: {
+    type: String,
+    default: null,
   },
   readAt: Date,
 }, { timestamps: true });

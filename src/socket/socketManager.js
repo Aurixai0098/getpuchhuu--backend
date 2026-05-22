@@ -5,8 +5,9 @@ const ServiceProvider = require('../models/ServiceProvider');
 const Chat = require('../models/Chat');
 const LocationTracking = require('../models/LocationTracking');
 
-const userSockets = new Map();   // userId -> socket.id (सिर्फ डिबगिंग के लिए)
+const userSockets = new Map();   // userId -> Set of socket IDs
 const providerSockets = new Map(); // provider userId -> socket.id
+const onlineUsers = new Map();    // userId -> Set(socket.id)
 
 module.exports = (io) => {
   io.on('connection', (socket) => {
@@ -14,25 +15,84 @@ module.exports = (io) => {
 
     socket.on('register', async (data) => {
       const { userId, role } = data;
-      if (userId) {
-        const uid = userId.toString();
+      if (!userId) return;
 
-        // सभी यूज़र अपने कमरे में जुड़ें
-        socket.join(`user_${uid}`);
-        userSockets.set(uid, socket.id);
+      const uid = userId.toString();
+      socket.join(`user_${uid}`);
+      if (!onlineUsers.has(uid)) onlineUsers.set(uid, new Set());
+      onlineUsers.get(uid).add(socket.id);
 
-        if (role === 'provider') {
-          providerSockets.set(uid, socket.id);
-          socket.join(`provider_${uid}`);
+      if (role === 'provider') {
+        providerSockets.set(uid, socket.id);
+        socket.join(`provider_${uid}`);
+      }
+
+      socket.userId = userId;
+      socket.role = role;
+
+      io.to(`user_${uid}`).emit('user-online', { userId: uid, role });
+      console.log(`✅ User ${uid} registered as ${role}`);
+    });
+
+    socket.on('typing-start', async (data) => {
+      const { bookingId } = data;
+      if (!socket.userId || !bookingId) return;
+      try {
+        const booking = await Booking.findById(bookingId);
+        if (!booking) return;
+        let receiverRoom = null;
+        if (socket.role === 'customer') {
+          const provider = await ServiceProvider.findById(booking.provider).populate('user');
+          if (provider && provider.user) receiverRoom = provider.user._id.toString();
+        } else {
+          receiverRoom = booking.customer.toString();
         }
-
-        socket.userId = userId;
-        socket.role = role;
-        console.log(`✅ User ${uid} registered as ${role}`);
+        if (receiverRoom) {
+          io.to(`user_${receiverRoom}`).emit('typing', { bookingId, userId: socket.userId });
+        }
+      } catch (err) {
+        console.error('typing-start error:', err);
       }
     });
 
-    // ---------- बुकिंग स्वीकार ----------
+    socket.on('typing-stop', async (data) => {
+      const { bookingId } = data;
+      if (!socket.userId || !bookingId) return;
+      try {
+        const booking = await Booking.findById(bookingId);
+        if (!booking) return;
+        let receiverRoom = null;
+        if (socket.role === 'customer') {
+          const provider = await ServiceProvider.findById(booking.provider).populate('user');
+          if (provider && provider.user) receiverRoom = provider.user._id.toString();
+        } else {
+          receiverRoom = booking.customer.toString();
+        }
+        if (receiverRoom) {
+          io.to(`user_${receiverRoom}`).emit('typing-stop', { bookingId, userId: socket.userId });
+        }
+      } catch (err) {
+        console.error('typing-stop error:', err);
+      }
+    });
+
+    socket.on('disconnect', () => {
+      console.log('🔌 Client disconnected:', socket.id);
+      if (socket.userId) {
+        const uid = socket.userId.toString();
+        if (onlineUsers.has(uid)) {
+          onlineUsers.get(uid).delete(socket.id);
+          if (onlineUsers.get(uid).size === 0) {
+            onlineUsers.delete(uid);
+            io.to(`user_${uid}`).emit('user-offline', { userId: uid, role: socket.role });
+          }
+        }
+        if (socket.role === 'provider') {
+          providerSockets.delete(uid);
+        }
+      }
+    });
+
     socket.on('accept-booking', async (data) => {
       const { bookingId, providerId } = data;
       try {
@@ -49,7 +109,6 @@ module.exports = (io) => {
         const provider = await ServiceProvider.findById(providerId).populate('user', 'firstName lastName phone avatar');
         if (!provider) throw new Error('Provider not found');
 
-        // ✅ कस्टमर के कमरे में भेजें (सभी टैब को मिलेगा)
         io.to(`user_${booking.customer._id.toString()}`).emit('booking-accepted', {
           bookingId: booking._id,
           provider: {
@@ -63,7 +122,6 @@ module.exports = (io) => {
 
         socket.emit('accept-success', { bookingId, status: 'confirmed' });
 
-        // दूसरे प्रोवाइडर्स को बताएं (room का इस्तेमाल नहीं, क्योंकि सिर्फ providerSockets से सीधे भेजना है)
         for (const [provUserId, sockId] of providerSockets.entries()) {
           if (provUserId !== providerId.toString()) {
             io.to(sockId).emit('booking-taken', { bookingId });
@@ -75,7 +133,6 @@ module.exports = (io) => {
       }
     });
 
-    // ---------- लोकेशन अपडेट ----------
     socket.on('update-location', async (data) => {
       const { bookingId, lat, lng } = data;
       const providerUserId = socket.userId;
@@ -91,7 +148,6 @@ module.exports = (io) => {
         });
         const booking = await Booking.findById(bookingId);
         if (booking) {
-          // ✅ कस्टमर के कमरे में भेजें
           io.to(`user_${booking.customer.toString()}`).emit('provider-location-update', {
             bookingId, lat, lng, timestamp: new Date(),
           });
@@ -101,31 +157,36 @@ module.exports = (io) => {
       }
     });
 
-    // ---------- मैसेज भेजें ----------
+    // ---------- FIXED SEND-MESSAGE (handles pending bookings) ----------
     socket.on('send-message', async (data) => {
-      const { bookingId, message, senderId, senderRole } = data;
-      if (!message || !message.trim()) return;
+      const { bookingId, message, senderId, senderRole, type = 'text', imageUrl } = data;
+      if (!message && !imageUrl) return;
       try {
-        const chat = await Chat.create({
+        const chatData = {
           booking: bookingId,
           sender: senderId,
           senderRole,
-          message: message.trim(),
-        });
+          message: type === 'image' ? (message || 'Image') : message.trim(),
+          type,
+          imageUrl: imageUrl || null,
+        };
+        const chat = await Chat.create(chatData);
 
         const booking = await Booking.findById(bookingId);
         if (!booking) return;
 
-        // रिसीवर का userId निकालें
         let receiverId = null;
         if (senderRole === 'customer') {
-          const provider = await ServiceProvider.findById(booking.provider).populate('user');
-          if (provider && provider.user) receiverId = provider.user._id;
+          // Agar provider assigned hai to use karo, warna customer ko hi bata do ki koi reply nahi milega
+          if (booking.provider) {
+            const provider = await ServiceProvider.findById(booking.provider).populate('user');
+            if (provider && provider.user) receiverId = provider.user._id;
+          }
+          // Agar provider nahi hai to message store ho jayega, par abhi real-time nahi bhej sakte
         } else {
           receiverId = booking.customer;
         }
 
-        // ✅ रिसीवर के कमरे में भेजें (सभी टैब को मिलेगा)
         if (receiverId) {
           io.to(`user_${receiverId.toString()}`).emit('new-message', {
             bookingId,
@@ -134,10 +195,11 @@ module.exports = (io) => {
             senderRole,
             createdAt: chat.createdAt,
             chatId: chat._id,
+            type: chat.type,
+            imageUrl: chat.imageUrl,
           });
         }
 
-        // भेजने वाले को कन्फर्मेशन
         socket.emit('message-sent', chat);
       } catch (err) {
         console.error(err);
@@ -145,16 +207,9 @@ module.exports = (io) => {
       }
     });
 
-    // ---------- डिस्कनेक्ट ----------
-    socket.on('disconnect', () => {
-      console.log('🔌 Client disconnected:', socket.id);
-      if (socket.userId) {
-        const uid = socket.userId.toString();
-        userSockets.delete(uid);
-        if (socket.role === 'provider') {
-          providerSockets.delete(uid);
-        }
-      }
+    socket.on('check-user-online', (userId) => {
+      const isOnline = onlineUsers.has(userId.toString());
+      socket.emit('user-online-status', { userId, isOnline });
     });
   });
 };

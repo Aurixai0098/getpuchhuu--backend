@@ -105,7 +105,7 @@ const bookingSchema = new mongoose.Schema({
   cancellation: {
     cancelledBy: {
       type: String,
-      enum: ['customer', 'provider', 'admin']
+       enum: ['customer', 'provider', 'admin', 'system']
     },
     reason: String,
     cancelledAt: Date,
