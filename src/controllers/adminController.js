@@ -264,7 +264,7 @@ exports.getAllProviders = asyncHandler(async (req, res) => {
     if (isAvailable !== undefined) query.isAvailable = isAvailable === 'true';
 
     const providers = await ServiceProvider.find(query)
-        .populate('user', 'firstName lastName email phone status')
+        .populate('user', 'firstName lastName email phone status avatar')
         .sort('-createdAt')
         .skip((page - 1) * limit)
         .limit(parseInt(limit));
