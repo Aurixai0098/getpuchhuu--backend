@@ -30,12 +30,12 @@ const serviceProviderSchema = new mongoose.Schema({
         radius: { type: Number, default: 10 }, // km
         coordinates: {
             type: { type: String, enum: ['Point'], default: 'Point' },
-            coordinates: { type: [Number], default: [0, 0] }  // [longitude, latitude]
+            coordinates: { type: [Number], default: [0, 0] }  // ✅ default valid point
         }
     },
     currentLocation: {
         type: { type: String, enum: ['Point'], default: 'Point' },
-        coordinates: { type: [Number], default: null },
+        coordinates: { type: [Number] , default: [0, 0]}, // ✅ optional – not created initially
         updatedAt: { type: Date, default: null }
     },
     documents: [{
