@@ -13,7 +13,6 @@ const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../utils/asyncHandler');
 
-// ✅ Helper function to round to 2 decimal places
 const roundTo2 = (num) => Math.round(num * 100) / 100;
 
 // @desc    Get admin dashboard stats
@@ -265,6 +264,7 @@ exports.getAllProviders = asyncHandler(async (req, res) => {
 
     const providers = await ServiceProvider.find(query)
         .populate('user', 'firstName lastName email phone status avatar')
+        .select('+documents')
         .sort('-createdAt')
         .skip((page - 1) * limit)
         .limit(parseInt(limit));
@@ -277,6 +277,7 @@ exports.getAllProviders = asyncHandler(async (req, res) => {
     }, 'Providers fetched successfully').send(res);
 });
 
+// ========== UPDATED getVerificationRequests ==========
 // @desc    Get all verification requests
 // @route   GET /api/v1/admin/verifications
 exports.getVerificationRequests = asyncHandler(async (req, res) => {
@@ -286,6 +287,8 @@ exports.getVerificationRequests = asyncHandler(async (req, res) => {
 
     let providers = await ServiceProvider.find(query)
         .populate('user', 'firstName lastName email phone avatar status')
+        .select('+documents')
+        .lean()   // essential to get plain objects with all fields
         .sort('-createdAt')
         .skip((page - 1) * limit)
         .limit(parseInt(limit));
@@ -294,18 +297,26 @@ exports.getVerificationRequests = asyncHandler(async (req, res) => {
         providers = providers.filter(provider => provider.user?.status === accountStatus);
     }
 
-    const verifications = providers.map(provider => ({
-        _id: provider._id,
-        businessName: provider.businessName,
-        user: provider.user,
-        documents: provider.documents || [],
-        verificationStatus: provider.verificationStatus,
-        verificationNote: provider.verificationNote,
-        createdAt: provider.createdAt,
-        experience: provider.experience,
-        serviceArea: provider.serviceArea,
-        bankDetails: provider.bankDetails
-    }));
+    const verifications = providers.map(provider => {
+        // Sanitize business name – remove 'undefined'
+        let cleanBusinessName = provider.businessName;
+        if (!cleanBusinessName || cleanBusinessName === 'undefined\'s Services' || cleanBusinessName.includes('undefined')) {
+            const userName = provider.user ? `${provider.user.firstName || ''} ${provider.user.lastName || ''}`.trim() : '';
+            cleanBusinessName = userName || 'Service Provider';
+        }
+        return {
+            _id: provider._id,
+            businessName: cleanBusinessName,
+            user: provider.user,
+            documents: provider.documents || [],
+            verificationStatus: provider.verificationStatus,
+            verificationNote: provider.verificationNote,
+            createdAt: provider.createdAt,
+            experience: provider.experience,
+            serviceArea: provider.serviceArea,
+            bankDetails: provider.bankDetails
+        };
+    });
 
     new ApiResponse(200, {
         verifications,
@@ -323,8 +334,8 @@ exports.verifyProviderKYC = asyncHandler(async (req, res) => {
     const provider = await ServiceProvider.findById(req.params.id);
     if (!provider) throw new ApiError(404, 'Provider not found');
 
-    const hasAadhaar = provider.documents.some(doc => doc.type === 'aadhar');
-    const hasPAN = provider.documents.some(doc => doc.type === 'pan');
+    const hasAadhaar = provider.documents?.some(doc => doc.type === 'aadhar');
+    const hasPAN = provider.documents?.some(doc => doc.type === 'pan');
     const uploadedDocs = [];
     if (hasAadhaar) uploadedDocs.push('Aadhaar Card');
     if (hasPAN) uploadedDocs.push('PAN Card');
@@ -352,13 +363,15 @@ exports.verifyProviderKYC = asyncHandler(async (req, res) => {
         }
 
         provider.verifiedAt = new Date();
-        provider.documents.forEach(doc => {
-            if (doc.type === 'aadhar' || doc.type === 'pan') {
-                doc.isVerified = true;
-                doc.verifiedAt = new Date();
-                doc.verifiedBy = req.user._id;
-            }
-        });
+        if (provider.documents) {
+            provider.documents.forEach(doc => {
+                if (doc.type === 'aadhar' || doc.type === 'pan') {
+                    doc.isVerified = true;
+                    doc.verifiedAt = new Date();
+                    doc.verifiedBy = req.user._id;
+                }
+            });
+        }
         await User.findByIdAndUpdate(provider.user, { role: 'provider' });
     } else if (status === 'rejected') {
         provider.verificationStatus = 'rejected';
@@ -800,12 +813,10 @@ exports.getUserStats = asyncHandler(async (req, res) => {
     const user = await User.findById(userId);
     if (!user) throw new ApiError(404, 'User not found');
     
-    // Wallet balance
     const Wallet = require('../models/Wallet');
     const wallet = await Wallet.findOne({ user: userId });
     const walletBalance = wallet ? roundTo2(wallet.balance) : 0;
     
-    // Total spent from completed bookings
     const bookings = await Booking.find({ customer: userId });
     let totalSpent = 0;
     let totalCompleted = 0, totalCancelled = 0, totalPending = 0;
@@ -829,7 +840,6 @@ exports.getUserStats = asyncHandler(async (req, res) => {
         }
     }
     
-    // Sort recent bookings by date desc
     recentBookings.sort((a, b) => new Date(b.date) - new Date(a.date));
     const topRecent = recentBookings.slice(0, 10);
     
@@ -879,8 +889,6 @@ exports.sendPushNotification = asyncHandler(async (req, res) => {
     if (targetType === 'specific_user') {
         recipientId = targetId;
     } else if (targetType === 'all_users') {
-        // For all users, you might loop or send to a special channel
-        // Here we simply return success (you can implement bulk later)
         return new ApiResponse(200, null, 'Push notification sent to all users (bulk not implemented)').send(res);
     } else {
         throw new ApiError(400, 'Invalid target type');
@@ -913,22 +921,7 @@ exports.sendSmsAlert = asyncHandler(async (req, res) => {
     if (!user) throw new ApiError(404, 'User not found');
     if (!user.phone) throw new ApiError(400, 'User has no phone number');
     
-    // Integrate your SMS gateway here (Twilio, MSG91, etc.)
-    // For now, we just log and return success
     console.log(`📱 SMS to ${user.phone}: ${message}`);
-    
-    // Example using Twilio (uncomment if you have Twilio configured)
-    /*
-    const accountSid = process.env.TWILIO_ACCOUNT_SID;
-    const authToken = process.env.TWILIO_AUTH_TOKEN;
-    const twilioPhone = process.env.TWILIO_PHONE_NUMBER;
-    const client = require('twilio')(accountSid, authToken);
-    await client.messages.create({
-        body: message,
-        to: `+91${user.phone}`,
-        from: twilioPhone
-    });
-    */
     
     new ApiResponse(200, null, 'SMS alert sent successfully').send(res);
 });

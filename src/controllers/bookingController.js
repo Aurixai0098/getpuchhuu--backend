@@ -1,7 +1,8 @@
+// controllers/bookingController.js
 const Booking = require('../models/Booking');
 const ServiceProvider = require('../models/ServiceProvider');
 const SubService = require('../models/SubService');
-const User = require('../models/User'); // Added for email
+const User = require('../models/User');
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../utils/asyncHandler');
@@ -9,14 +10,12 @@ const { sendEmail, emailTemplates } = require('../utils/sendEmail');
 
 const roundTo2 = (num) => Math.round(num * 100) / 100;
 
-// @desc    Create new booking (with real-time matching)
+// @desc    Create new booking (with optional providerId)
 // @route   POST /api/v1/bookings
 exports.createBooking = asyncHandler(async (req, res) => {
-  const { 
-    bookingId, services, scheduledDate, scheduledTime, 
-    serviceAddress, payment, notes, category
-  } = req.body;
+  const { services, scheduledDate, scheduledTime, serviceAddress, payment, notes, category, providerId } = req.body;
 
+  // Calculate pricing
   let subtotal = 0;
   const bookingItems = [];
 
@@ -42,41 +41,38 @@ exports.createBooking = asyncHandler(async (req, res) => {
   const convenienceFee = roundTo2(subtotal * 0.05);
   const total = roundTo2(subtotal + gst + sgst + convenienceFee);
 
-  const finalBookingId = bookingId || `BK-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+  const finalBookingId = `BK-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+  // If providerId is provided, assign directly
+  let provider = null;
+  if (providerId) {
+    provider = await ServiceProvider.findById(providerId);
+    if (!provider) throw new ApiError(404, 'Provider not found');
+  }
 
   const booking = await Booking.create({
     bookingId: finalBookingId,
     customer: req.user._id,
-    provider: null,
+    provider: provider ? provider._id : null,
     category,
     items: bookingItems,
     scheduledDate,
     scheduledTime,
-    serviceAddress: {
-      ...serviceAddress,
-      ...(req.user.addresses.find(addr => addr._id.toString() === serviceAddress.addressId) || {})
-    },
-    pricing: {
-      subtotal,
-      taxes: { gst, sgst, cgst: 0 },
-      convenienceFee,
-      total
-    },
-    payment: {
-      method: payment.method,
-      status: 'pending'
-    },
+    serviceAddress,
+    pricing: { subtotal, taxes: { gst, sgst, cgst: 0 }, convenienceFee, total },
+    payment: { method: payment.method, status: 'pending' },
     customerNotes: notes,
-    status: 'searching'
+    status: provider ? 'pending' : 'searching'
   });
 
   booking.timeline.push({
-    status: 'searching',
-    note: 'Searching for nearby providers',
+    status: provider ? 'pending' : 'searching',
+    note: provider ? 'Waiting for provider confirmation' : 'Searching for nearby providers',
     updatedBy: req.user._id
   });
   await booking.save();
 
+  // Send confirmation email to customer
   try {
     await sendEmail({
       email: req.user.email,
@@ -85,18 +81,31 @@ exports.createBooking = asyncHandler(async (req, res) => {
     });
   } catch (error) { console.error('Failed to send booking email:', error); }
 
+  // Notify customer
   const Notification = require('../models/Notification');
   await Notification.create({
     recipient: req.user._id,
     type: 'booking_created',
     title: 'Booking Created',
-    message: `Your booking ${booking.bookingId} has been created. Searching for a provider...`,
+    message: `Your booking ${booking.bookingId} has been created. ${provider ? 'Waiting for provider confirmation.' : 'Searching for a provider...'}`,
     reference: { model: 'Booking', id: booking._id },
     channels: { inApp: true, email: true }
   });
 
   const io = req.app.get('io');
-  if (io) {
+  if (io && provider) {
+    // Notify the specific provider via socket
+    io.to(`provider_${provider.user._id}`).emit('new-booking-request', {
+      bookingId: booking._id,
+      customerName: `${req.user.firstName} ${req.user.lastName}`,
+      serviceName: bookingItems[0]?.serviceName,
+      scheduledDate: booking.scheduledDate,
+      address: booking.serviceAddress,
+      amount: booking.pricing.total,
+      bookingDetails: { items: bookingItems, total: booking.pricing.total }
+    });
+  } else if (io && !provider) {
+    // Fallback to matching logic (search nearby providers)
     const pincode = serviceAddress.pincode;
     const city = serviceAddress.city;
     let locationQuery = {};
@@ -120,8 +129,7 @@ exports.createBooking = asyncHandler(async (req, res) => {
     }
 
     for (const prov of targetProviders) {
-      const providerUserId = prov.user._id.toString();
-      io.to(`provider_${providerUserId}`).emit('new-booking-request', {
+      io.to(`provider_${prov.user._id}`).emit('new-booking-request', {
         bookingId: booking._id,
         customerName: `${req.user.firstName} ${req.user.lastName}`,
         serviceName: bookingItems[0]?.serviceName,
@@ -133,11 +141,11 @@ exports.createBooking = asyncHandler(async (req, res) => {
     }
   }
 
-  new ApiResponse(201, { booking }, 'Booking created, waiting for provider acceptance').send(res);
+  new ApiResponse(201, { booking }, 'Booking created successfully').send(res);
 });
 
-// @desc    Accept booking by provider (with email to customer)
-// @route   POST /api/v1/bookings/:id/accept (also PATCH)
+// @desc    Accept booking by provider (also PATCH)
+// @route   POST /api/v1/bookings/:id/accept or PATCH /api/v1/bookings/:id/accept
 exports.acceptBooking = asyncHandler(async (req, res) => {
   const bookingId = req.params.id;
   const providerUserId = req.user._id;
@@ -175,6 +183,7 @@ exports.acceptBooking = asyncHandler(async (req, res) => {
       }
     });
 
+    // Notify other providers that this booking is taken
     const allProviders = await ServiceProvider.find({ verificationStatus: 'verified' }).populate('user', '_id');
     for (const prov of allProviders) {
       if (prov.user._id.toString() !== providerUserId) {
@@ -219,9 +228,7 @@ exports.acceptBooking = asyncHandler(async (req, res) => {
       subject: `Booking ${booking.bookingId} Accepted`,
       html: emailHtml
     });
-  } catch (emailErr) {
-    console.error('Failed to send booking accepted email:', emailErr);
-  }
+  } catch (emailErr) { console.error('Failed to send booking accepted email:', emailErr); }
 
   new ApiResponse(200, { booking }, 'Booking accepted successfully').send(res);
 });
@@ -392,7 +399,7 @@ exports.startService = asyncHandler(async (req, res) => {
   new ApiResponse(200, { booking }, 'Service started').send(res);
 });
 
-// @desc    Generate completion OTP (Provider) -> Sends OTP to customer email
+// @desc    Generate completion OTP (Provider) – sends to customer email
 // @route   POST /api/v1/bookings/:id/generate-otp
 exports.generateCompletionOTP = asyncHandler(async (req, res) => {
   const booking = await Booking.findById(req.params.id)
@@ -481,10 +488,12 @@ exports.completeService = asyncHandler(async (req, res) => {
 
   await booking.save();
 
+  // Update provider stats
   await ServiceProvider.findByIdAndUpdate(booking.provider, {
     $inc: { 'stats.completedBookings': 1, 'stats.totalEarnings': booking.pricing.total }
   });
 
+  // Update provider rating via review post-save hook (already handled)
   new ApiResponse(200, { booking }, 'Service completed').send(res);
 });
 

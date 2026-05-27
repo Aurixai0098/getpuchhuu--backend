@@ -18,7 +18,16 @@ const userSchema = new mongoose.Schema({
     email: { type: String, required: [true, 'Email is required'], unique: true, lowercase: true, match: [/^\S+@\S+\.\S+$/, 'Invalid email format'] },
     phone: { type: String, required: [true, 'Phone number is required'], unique: true, match: [/^[6-9]\d{9}$/, 'Invalid Indian phone number'] },
     password: { type: String, required: [true, 'Password is required'], minlength: 8, select: false },
-    avatar: { url: String, publicId: String },
+    avatar: {
+        url: {
+            type: String,
+            default: 'https://thumbs.dreamstime.com/b/default-avatar-profile-icon-vector-social-media-user-image-182145777.jpg'
+        },
+        publicId: {
+            type: String,
+            default: null // Default image Cloudinary par nahi hai, isliye publicId null rahegi
+        }
+    },
     gender: { type: String, enum: ['male', 'female', 'other'] },
     dateOfBirth: Date,
     role: { type: String, enum: ['customer', 'provider', 'admin'], default: 'customer' },
@@ -40,17 +49,17 @@ const userSchema = new mongoose.Schema({
     lastLogin: Date,
 }, { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } });
 
-userSchema.virtual('fullName').get(function() {
+userSchema.virtual('fullName').get(function () {
     return `${this.firstName} ${this.lastName}`;
 });
 
-userSchema.pre('save', async function() {
+userSchema.pre('save', async function () {
     if (!this.isModified('password')) return;
     const salt = await bcrypt.genSalt(12);
     this.password = await bcrypt.hash(this.password, salt);
 });
 
-userSchema.methods.comparePassword = async function(candidatePassword) {
+userSchema.methods.comparePassword = async function (candidatePassword) {
     return await bcrypt.compare(candidatePassword, this.password);
 };
 

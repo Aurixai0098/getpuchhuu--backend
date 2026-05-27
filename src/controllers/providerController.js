@@ -1,10 +1,12 @@
-// Full providerController.js (with registerProvider fix)
+// controllers/providerController.js
 const ServiceProvider = require('../models/ServiceProvider');
+const SubService = require('../models/SubService');
 const User = require('../models/User');
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../utils/asyncHandler');
 const { uploadToCloudinary } = require('../config/cloudinary');
+const slugify = require('slugify');
 
 // Helper: Distance calculation
 function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
@@ -40,36 +42,135 @@ async function checkLocationInServiceArea(provider, lat, lng) {
   return distance <= radius;
 }
 
-// @desc    Register as service provider
+// @desc    Register as service provider (complete multi-step registration)
 exports.registerProvider = asyncHandler(async (req, res) => {
     const existingProvider = await ServiceProvider.findOne({ user: req.user._id });
     if (existingProvider) throw new ApiError(400, 'You are already registered as a service provider');
-    
-    const { businessName, bio, experience, services, serviceArea, workingHours } = req.body;
-    if (!businessName || !bio) throw new ApiError(400, 'Business name and bio are required');
-    if (!services || !services.length || !services[0].category || !services[0].subServices?.length) {
-        throw new ApiError(400, 'At least one category and one sub-service are required');
+
+    // Parse JSON strings sent from frontend (because FormData sends strings)
+    const services = typeof req.body.services === 'string' ? JSON.parse(req.body.services) : req.body.services;
+    const serviceArea = typeof req.body.serviceArea === 'string' ? JSON.parse(req.body.serviceArea) : req.body.serviceArea;
+    const workingHours = typeof req.body.workingHours === 'string' ? JSON.parse(req.body.workingHours) : req.body.workingHours;
+    const bankDetails = typeof req.body.bankDetails === 'string' ? JSON.parse(req.body.bankDetails) : req.body.bankDetails;
+    const experience = typeof req.body.experience === 'string' ? JSON.parse(req.body.experience) : req.body.experience;
+
+    const { fullName, dateOfBirth, gender, isAvailable, emergencyServiceAvailable, bio } = req.body;
+
+    // Validate full name
+    if (!fullName || fullName.trim() === '') {
+        throw new ApiError(400, 'Full name is required for provider registration');
     }
-    
+
+    // Split full name into first and last name
+    const nameParts = fullName.trim().split(' ') || [];
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join(' ') || '';
+
+    // 1. Update User model with personal info and avatar
+    const userUpdate = {
+        firstName,
+        lastName,
+        gender,
+        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null
+    };
+    if (req.files?.avatar && req.files.avatar[0]) {
+        const avatarResult = await uploadToCloudinary(req.files.avatar[0].buffer, 'gharseva/avatars');
+        userUpdate.avatar = { url: avatarResult.secure_url, publicId: avatarResult.public_id };
+    }
+    await User.findByIdAndUpdate(req.user._id, userUpdate);
+
+    // 2. Prepare documents array with proper error handling
+    const documents = [];
+
+    if (req.files?.aadharFront && req.files.aadharFront[0]) {
+        try {
+            const frontResult = await uploadToCloudinary(req.files.aadharFront[0].buffer, 'gharseva/kyc-documents');
+            documents.push({
+                type: 'aadhar',
+                frontImage: { url: frontResult.secure_url, publicId: frontResult.public_id },
+                isVerified: false
+            });
+            console.log('✅ Aadhaar front uploaded');
+        } catch (err) {
+            console.error('❌ Aadhaar front upload failed:', err.message);
+            throw new ApiError(500, 'Aadhaar front image upload failed. Please try again.');
+        }
+    }
+    if (req.files?.aadharBack && req.files.aadharBack[0]) {
+        try {
+            const backResult = await uploadToCloudinary(req.files.aadharBack[0].buffer, 'gharseva/kyc-documents');
+            const existingAadhar = documents.find(d => d.type === 'aadhar');
+            if (existingAadhar) {
+                existingAadhar.backImage = { url: backResult.secure_url, publicId: backResult.public_id };
+            } else {
+                documents.push({
+                    type: 'aadhar',
+                    backImage: { url: backResult.secure_url, publicId: backResult.public_id },
+                    isVerified: false
+                });
+            }
+            console.log('✅ Aadhaar back uploaded');
+        } catch (err) {
+            console.error('❌ Aadhaar back upload failed:', err.message);
+            throw new ApiError(500, 'Aadhaar back image upload failed. Please try again.');
+        }
+    }
+    if (req.files?.panFront && req.files.panFront[0]) {
+        try {
+            const panResult = await uploadToCloudinary(req.files.panFront[0].buffer, 'gharseva/kyc-documents');
+            documents.push({
+                type: 'pan',
+                frontImage: { url: panResult.secure_url, publicId: panResult.public_id },
+                isVerified: false
+            });
+            console.log('✅ PAN card uploaded');
+        } catch (err) {
+            console.error('❌ PAN upload failed:', err.message);
+            throw new ApiError(500, 'PAN card image upload failed. Please try again.');
+        }
+    }
+
+    // 3. Prepare service area (with address fields)
+    const finalServiceArea = {
+        ...serviceArea,
+        coordinates: serviceArea?.coordinates || { type: 'Point', coordinates: [0, 0] },
+        cities: serviceArea?.city ? [serviceArea.city] : [],
+        pincodes: serviceArea?.pincode ? [serviceArea.pincode] : [],
+        radius: serviceArea?.radius || 10
+    };
+    if (req.body.currentAddress && !finalServiceArea.address) {
+        finalServiceArea.address = req.body.currentAddress;
+    }
+
+    // 4. Business name – strong fallback
+    let businessName = req.body.businessName;
+    if (!businessName || businessName === 'undefined\'s Services' || businessName.includes('undefined')) {
+        businessName = fullName ? `${fullName}'s Services` : 'Service Provider';
+    }
+
+    let providerBio = bio || '';
+    if (emergencyServiceAvailable === 'true' || emergencyServiceAvailable === true) {
+        providerBio += (providerBio ? ' | ' : '') + 'Emergency Service Available';
+    }
+
     const providerData = {
         user: req.user._id,
         businessName,
-        bio,
+        bio: providerBio,
         experience: experience || { years: 0, description: '' },
-        services,
+        services: services || [],
         workingHours: workingHours || getDefaultWorkingHours(),
-        serviceArea: {
-            ...serviceArea,
-            coordinates: serviceArea?.coordinates || { type: 'Point', coordinates: [0, 0] }
-        },
+        serviceArea: finalServiceArea,
+        documents: documents.length ? documents : [],
+        bankDetails: bankDetails || {},
         verificationStatus: 'pending',
-        isAvailable: false
-        // No currentLocation – will be undefined initially
+        isAvailable: isAvailable === 'true' || isAvailable === true
     };
-    
+
     const provider = await ServiceProvider.create(providerData);
     await User.findByIdAndUpdate(req.user._id, { role: 'provider' });
-    
+
+    console.log(`✅ Provider registered with ${documents.length} document(s)`);
     new ApiResponse(201, { provider }, 'Provider registration submitted for verification').send(res);
 });
 
@@ -121,6 +222,65 @@ exports.removeService = asyncHandler(async (req, res) => {
     provider.services.id(req.params.serviceId).deleteOne();
     await provider.save();
     new ApiResponse(200, null, 'Service removed').send(res);
+});
+
+// ✅ Create custom service (provider adds a new sub-service with image)
+// ✅ Robust slug uniqueness with counter
+exports.createCustomService = asyncHandler(async (req, res) => {
+    const { name, category, basePrice, description } = req.body;
+    
+    if (!name || !category || !basePrice) {
+        throw new ApiError(400, 'Name, category and base price are required');
+    }
+    if (isNaN(basePrice) || basePrice <= 0) {
+        throw new ApiError(400, 'Base price must be a positive number');
+    }
+
+    let imageUrl = null;
+    let imagePublicId = null;
+    if (req.file) {
+        const result = await uploadToCloudinary(req.file.buffer, 'gharseva/services');
+        imageUrl = result.secure_url;
+        imagePublicId = result.public_id;
+    }
+
+    // Generate unique slug with incremental suffix
+    let baseSlug = slugify(name, { lower: true, strict: true });
+    let slug = baseSlug;
+    let counter = 1;
+    
+    while (true) {
+        const existing = await SubService.findOne({ slug });
+        if (!existing) break;
+        slug = `${baseSlug}-${counter}`;
+        counter++;
+        if (counter > 100) {
+            // fallback to timestamp (extremely rare)
+            slug = `${baseSlug}-${Date.now()}`;
+            break;
+        }
+    }
+
+    const newService = await SubService.create({
+        name,
+        slug,
+        category,
+        basePrice: parseFloat(basePrice),
+        description: description || name,
+        shortDescription: description || name,
+        isActive: true,
+        isFeatured: false,
+        pricingType: 'fixed',
+        priceUnit: 'per_service',
+        estimatedDuration: { min: 30, max: 60 },
+        includes: [],
+        excludes: [],
+        requirements: [],
+        tags: [],
+        images: imageUrl ? [{ url: imageUrl, publicId: imagePublicId, caption: name }] : []
+    });
+
+    new ApiResponse(201, { service: newService }, 'Custom service created successfully').send(res);
 });
 
 // @desc    Update service area
@@ -233,10 +393,10 @@ exports.getStats = asyncHandler(async (req, res) => {
     new ApiResponse(200, { stats: provider.stats, rating: provider.rating, recentBookings, earningsSummary }, 'Stats fetched').send(res);
 });
 
-// @desc    Get public provider profile
+// @desc    Get public provider profile (used by customer)
 exports.getPublicProfile = asyncHandler(async (req, res) => {
     const provider = await ServiceProvider.findById(req.params.id)
-        .populate('user', 'firstName lastName avatar')
+        .populate('user', 'firstName lastName avatar phone email')
         .populate('services.category', 'name slug')
         .populate('services.subServices', 'name slug basePrice');
     if (!provider) throw new ApiError(404, 'Provider not found');
@@ -245,23 +405,110 @@ exports.getPublicProfile = asyncHandler(async (req, res) => {
     new ApiResponse(200, { provider, reviews }, 'Provider profile fetched').send(res);
 });
 
-// @desc    Search providers
+// ========== ✅ UPDATED searchProviders – includes real serviceId ==========
+// @desc    Search providers (for customer)
 exports.searchProviders = asyncHandler(async (req, res) => {
     const { latitude, longitude, radius = 10, service, pincode, city, page = 1, limit = 10 } = req.query;
     const query = { verificationStatus: 'verified', isAvailable: true };
+    
+    // Filter by service category if provided
     if (service) query['services.category'] = service;
+    
+    // Build location filter only if at least one location criteria is provided
     let locationFilter = {};
+    let hasLocation = false;
+    
     if (latitude && longitude) {
         const lat = parseFloat(latitude), lng = parseFloat(longitude);
         locationFilter = { serviceArea: { $nearSphere: { $geometry: { type: 'Point', coordinates: [lng, lat] }, $maxDistance: parseFloat(radius) * 1000 } } };
-    } else if (pincode) query['serviceArea.pincodes'] = pincode;
-    else if (city) query['serviceArea.cities'] = { $regex: new RegExp(`^${city}$`, 'i') };
-    else return new ApiResponse(200, { providers: [], pagination: { page: 1, limit, total: 0, pages: 0 } }, 'No location criteria').send(res);
-    Object.assign(query, locationFilter);
-    const providers = await ServiceProvider.find(query).populate('user', 'firstName lastName avatar').populate('services.category', 'name slug').sort('-rating.average').skip((page-1)*limit).limit(parseInt(limit));
-    const total = await ServiceProvider.countDocuments(query);
-    new ApiResponse(200, { providers, pagination: { page: parseInt(page), limit: parseInt(limit), total, pages: Math.ceil(total/limit) } }, 'Providers fetched').send(res);
+        hasLocation = true;
+    } else if (pincode) {
+        query['serviceArea.pincodes'] = pincode;
+        hasLocation = true;
+    } else if (city) {
+        query['serviceArea.cities'] = { $regex: new RegExp(`^${city}$`, 'i') };
+        hasLocation = true;
+    }
+    
+    // If neither location nor service category is provided, return empty (optional)
+    if (!hasLocation && !service) {
+        return new ApiResponse(200, { providers: [], pagination: { page: 1, limit, total: 0, pages: 0 } }, 'No location or service criteria').send(res);
+    }
+    
+    // Combine query and location filter (if any)
+    const finalQuery = hasLocation ? { ...query, ...locationFilter } : query;
+    
+    const providers = await ServiceProvider.find(finalQuery)
+        .populate('user', 'firstName lastName avatar')
+        .populate('services.subServices', 'basePrice name')  // populate to get min price
+        .populate('services.category', 'name slug')
+        .sort('-rating.average')
+        .skip((page - 1) * limit)
+        .limit(parseInt(limit));
+    
+    // Transform provider data for frontend
+    const transformedProviders = providers.map(provider => {
+        // Calculate minimum price from all subServices across all categories
+        let minPrice = Infinity;
+        if (provider.services && provider.services.length > 0) {
+            for (const svc of provider.services) {
+                if (svc.subServices && svc.subServices.length) {
+                    const prices = svc.subServices.map(sub => sub.basePrice);
+                    const localMin = Math.min(...prices);
+                    if (localMin < minPrice) minPrice = localMin;
+                }
+            }
+        }
+        if (minPrice === Infinity) minPrice = 0;
+        
+        const isOnline = provider.isAvailable && (new Date() - new Date(provider.lastActive) < 60000);
+        const avgRating = provider.rating?.average || 0;
+        const reviewCount = provider.rating?.count || 0;
+        
+        // Get first city from serviceArea (if any)
+        const location = provider.serviceArea?.cities?.length ? provider.serviceArea.cities[0] : null;
+        
+        // Build servicesList from subServices names (for card display)
+        let servicesList = [];
+        let firstServiceId = null;
+        if (provider.services && provider.services.length > 0) {
+            for (const svc of provider.services) {
+                if (svc.subServices && svc.subServices.length) {
+                    const names = svc.subServices.map(sub => sub.name);
+                    servicesList.push(...names);
+                    // Take the first sub-service ID for direct booking
+                    if (!firstServiceId && svc.subServices[0]) {
+                        firstServiceId = svc.subServices[0]._id;
+                    }
+                }
+            }
+        }
+        if (servicesList.length === 0) servicesList = ['Tap Repair', 'Pipe Fixing', 'Bathroom Fitting'];
+        
+        return {
+            id: provider._id,
+            businessName: provider.businessName,
+            ownerName: provider.user ? `${provider.user.firstName} ${provider.user.lastName}` : '',
+            avatar: provider.user?.avatar?.url || null,
+            rating: { average: avgRating, count: reviewCount },
+            isVerified: provider.verificationStatus === 'verified',
+            isOnline,
+            minPrice,
+            location,
+            experience: provider.experience?.years || 0,
+            servicesList: servicesList,
+            serviceId: firstServiceId,   // ✅ REAL SUB-SERVICE ID
+        };
+    });
+    
+    const total = await ServiceProvider.countDocuments(finalQuery);
+    
+    new ApiResponse(200, {
+        providers: transformedProviders,
+        pagination: { page: parseInt(page), limit: parseInt(limit), total, pages: Math.ceil(total / limit) }
+    }, 'Providers fetched').send(res);
 });
+// ========== END OF UPDATED searchProviders ==========
 
 // @desc    Get provider notifications
 exports.getNotifications = asyncHandler(async (req, res) => {
@@ -279,7 +526,7 @@ exports.markNotificationRead = asyncHandler(async (req, res) => {
     new ApiResponse(200, { notification }, 'Marked as read').send(res);
 });
 
-// @desc    Update heartbeat
+// @desc    Update heartbeat (online status)
 exports.updateHeartbeat = asyncHandler(async (req, res) => {
     const provider = await ServiceProvider.findOne({ user: req.user._id });
     if (!provider) throw new ApiError(404, 'Provider profile not found');
@@ -287,7 +534,7 @@ exports.updateHeartbeat = asyncHandler(async (req, res) => {
     new ApiResponse(200, { lastActive: new Date() }, 'Heartbeat updated').send(res);
 });
 
-// @desc    Update live location
+// @desc    Update live location (for provider matching)
 exports.updateLocation = asyncHandler(async (req, res) => {
     const { lat, lng } = req.body;
     if (!lat || !lng) throw new ApiError(400, 'Latitude and longitude required');
@@ -321,7 +568,7 @@ exports.getNearbyProviders = asyncHandler(async (req, res) => {
     new ApiResponse(200, { providers: results }, 'Nearby providers fetched').send(res);
 });
 
-// @desc    Get featured providers
+// @desc    Get featured providers (for home page)
 exports.getFeaturedProviders = asyncHandler(async (req, res) => {
     const { limit = 20 } = req.query;
     const providers = await ServiceProvider.find({ verificationStatus: 'verified', isAvailable: true, 'stats.completedBookings': { $gt: 0 } })

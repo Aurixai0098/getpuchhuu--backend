@@ -21,6 +21,7 @@ const paymentRoutes = require('./routes/paymentRoutes');
 const paymentController = require('./controllers/paymentController');
 const chatRoutes = require('./routes/chatRoutes');
 const locationRoutes = require('./routes/locationRoutes');
+const cartRoutes = require('./routes/cartRoutes'); // ✅ ADDED
 
 const app = express();
 app.set('trust proxy', 1);
@@ -109,6 +110,7 @@ app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/payments', paymentRoutes);
 app.use('/api/v1/chat', chatRoutes);
 app.use('/api/v1/location', locationRoutes);
+app.use('/api/v1/cart', cartRoutes); // ✅ ADDED
 
 app.use((req, res, next) => {
     next(new ApiError(404, `Can't find ${req.originalUrl} on this server!`));

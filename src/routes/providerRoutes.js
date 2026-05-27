@@ -2,8 +2,6 @@ const express = require('express');
 const providerController = require('../controllers/providerController');
 const withdrawalController = require('../controllers/withdrawalController');
 const { protect, authorize } = require('../middleware/auth');
-const validate = require('../middleware/validate');
-const { body } = require('express-validator');
 const { upload } = require('../config/cloudinary');
 
 const router = express.Router();
@@ -12,7 +10,7 @@ const router = express.Router();
 router.get('/search', providerController.searchProviders);
 router.get('/:id/public', providerController.getPublicProfile);
 router.get('/featured', providerController.getFeaturedProviders);
-router.get('/nearby', providerController.getNearbyProviders); // ✅ NEW ROUTE
+router.get('/nearby', providerController.getNearbyProviders);
 
 // ========== PROTECTED ROUTES ==========
 router.use(protect);
@@ -20,11 +18,27 @@ router.use(protect);
 // Heartbeat endpoint
 router.post('/heartbeat', authorize('provider'), providerController.updateHeartbeat);
 
-// ✅ Live location update endpoint
+// Live location update endpoint
 router.post('/location', authorize('provider'), providerController.updateLocation);
 
-// Provider registration (customer to provider)
-router.post('/register', authorize('customer'), providerController.registerProvider);
+// ✅ Provider registration – accepts multiple files for avatar, Aadhaar, PAN
+router.post('/register',
+    authorize('customer'),
+    upload.fields([
+        { name: 'avatar', maxCount: 1 },
+        { name: 'aadharFront', maxCount: 1 },
+        { name: 'aadharBack', maxCount: 1 },
+        { name: 'panFront', maxCount: 1 }
+    ]),
+    providerController.registerProvider
+);
+
+// Create custom service (allow customer during registration, provider after)
+router.post('/custom-service',
+    authorize('customer', 'provider'),
+    upload.single('image'),
+    providerController.createCustomService
+);
 
 // Provider profile
 router.get('/profile', authorize('provider'), providerController.getProfile);
@@ -40,7 +54,7 @@ router.delete('/services/:serviceId', authorize('provider'), providerController.
 router.put('/service-area', authorize('provider'), providerController.updateServiceArea);
 router.put('/bank-details', authorize('provider'), providerController.updateBankDetails);
 
-// KYC Document Upload Routes with Multer
+// KYC Document Upload Routes
 router.post('/upload-kyc',
     authorize('provider'),
     upload.fields([
@@ -57,7 +71,7 @@ router.get('/verification-status', authorize('provider'), providerController.get
 router.get('/notifications', authorize('provider'), providerController.getNotifications);
 router.patch('/notifications/:id/read', authorize('provider'), providerController.markNotificationRead);
 
-// ========== WITHDRAWAL REQUESTS ==========
+// Withdrawal requests
 router.post('/withdrawals/request', authorize('provider'), withdrawalController.requestWithdrawal);
 router.get('/withdrawals/my', authorize('provider'), withdrawalController.getMyWithdrawals);
 
