@@ -9,17 +9,15 @@ const notificationSchema = new mongoose.Schema({
   type: {
     type: String,
     enum: [
-      'booking_created',
-      'booking_confirmed',
-      'booking_cancelled',
-      'booking_completed',
-      'payment_received',
-      'payment_failed',
-      'review_received',
-      'profile_verified',
-      'profile_rejected',
-      'system',
-      'promotional'
+      'booking',           // general booking notifications (created, accepted, confirmed, offer, etc.)
+      'booking_offer',     // provider sent a price offer
+      'booking_confirmed', // customer accepted offer
+      'message',           // chat messages
+      'alert',             // system alerts
+      'system',            // general system messages (cancellation, etc.)
+      'payment',           // payment related
+      'profile_verified',  // KYC verified
+      'profile_rejected'   // KYC rejected
     ],
     required: true
   },
