@@ -3,6 +3,8 @@ const Booking = require('../models/Booking');
 const ServiceProvider = require('../models/ServiceProvider');
 const SubService = require('../models/SubService');
 const User = require('../models/User');
+const Settings = require('../models/Settings');
+const Wallet = require('../models/Wallet');
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../utils/asyncHandler');
@@ -18,6 +20,12 @@ const safeJSONParse = (str, fieldName) => {
   } catch (err) {
     throw new ApiError(400, `Invalid JSON format for ${fieldName}`);
   }
+};
+
+// Helper to get commission percentage
+const getCommission = async () => {
+  const setting = await Settings.findOne({ key: 'commission' });
+  return setting ? setting.value : 20;
 };
 
 // @desc    Create new booking with problem description and images
@@ -435,92 +443,33 @@ exports.startService = asyncHandler(async (req, res) => {
   new ApiResponse(200, { booking }, 'Service started').send(res);
 });
 
-// ✅ FIXED: Generate completion OTP AND SEND EMAIL
-// @desc    Generate completion OTP and send to customer email
-// @route   POST /api/v1/bookings/:id/generate-otp
+// @desc    Generate completion OTP and send email
 exports.generateCompletionOTP = asyncHandler(async (req, res) => {
-  // Populate customer details including email
   const booking = await Booking.findById(req.params.id).populate('customer', 'email firstName lastName');
   if (!booking) throw new ApiError(404, 'Booking not found');
-
   const provider = await ServiceProvider.findOne({ user: req.user._id });
-  if (!provider || provider._id.toString() !== booking.provider.toString()) {
-    throw new ApiError(403, 'Not authorized');
-  }
-  if (booking.status !== 'in_progress') {
-    throw new ApiError(400, 'Can only generate OTP for in-progress bookings');
-  }
-
-  // Generate 4-digit OTP
+  if (!provider || provider._id.toString() !== booking.provider.toString()) throw new ApiError(403);
+  if (booking.status !== 'in_progress') throw new ApiError(400);
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
-  booking.otp = {
-    code: otp,
-    expiresAt: new Date(Date.now() + 30 * 60 * 1000), // 30 minutes
-    verified: false
-  };
+  booking.otp = { code: otp, expiresAt: new Date(Date.now() + 30 * 60 * 1000), verified: false };
   await booking.save();
 
-  // Prepare email content
   const customerEmail = booking.customer.email;
   const customerName = `${booking.customer.firstName} ${booking.customer.lastName}`;
   const bookingId = booking.bookingId;
-
-  const emailHtml = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="UTF-8">
-      <title>Service Completion OTP</title>
-      <style>
-        body { font-family: Arial, sans-serif; background: #f4f4f4; margin: 0; padding: 20px; }
-        .container { max-width: 500px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .otp-code { font-size: 42px; font-weight: bold; letter-spacing: 5px; background: #eef2ff; display: inline-block; padding: 12px 24px; border-radius: 8px; margin: 20px 0; }
-        .footer { margin-top: 20px; font-size: 12px; color: #6b7280; text-align: center; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <h2>Hello ${customerName},</h2>
-        <p>Your service provider has requested completion of your booking <strong>${bookingId}</strong>.</p>
-        <p>Please share the following OTP with the provider to complete the service:</p>
-        <div style="text-align:center">
-          <div class="otp-code">${otp}</div>
-        </div>
-        <p>This OTP is valid for <strong>30 minutes</strong>.</p>
-        <p>If you did not request this, please ignore this email.</p>
-        <div class="footer">
-          <p>GharSeva - Your trusted home service partner</p>
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
-
-  // Send email
+  const emailHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Service Completion OTP</title><style>body{font-family:Arial,sans-serif;background:#f4f4f4;margin:0;padding:20px}.container{max-width:500px;margin:0 auto;background:#fff;padding:30px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}.otp-code{font-size:42px;font-weight:bold;letter-spacing:5px;background:#eef2ff;display:inline-block;padding:12px 24px;border-radius:8px;margin:20px 0}.footer{margin-top:20px;font-size:12px;color:#6b7280;text-align:center}</style></head><body><div class="container"><h2>Hello ${customerName},</h2><p>Your service provider has requested completion of your booking <strong>${bookingId}</strong>.</p><p>Please share the following OTP with the provider to complete the service:</p><div style="text-align:center"><div class="otp-code">${otp}</div></div><p>This OTP is valid for <strong>30 minutes</strong>.</p><p>If you did not request this, please ignore this email.</p><div class="footer"><p>GharSeva - Your trusted home service partner</p></div></div></body></html>`;
   let emailSent = false;
   try {
-    await sendEmail({
-      email: customerEmail,
-      subject: `Service Completion OTP for Booking ${bookingId}`,
-      html: emailHtml
-    });
+    await sendEmail({ email: customerEmail, subject: `Service Completion OTP for Booking ${bookingId}`, html: emailHtml });
     emailSent = true;
-    console.log(`✅ OTP email sent to ${customerEmail} for booking ${bookingId}`);
+    console.log(`✅ OTP email sent to ${customerEmail}`);
   } catch (emailErr) {
-    console.error(`❌ Failed to send OTP email to ${customerEmail}:`, emailErr.message);
-    // Continue – we still return the OTP to provider as fallback
+    console.error(`❌ Failed to send OTP email: ${emailErr.message}`);
   }
-
-  // Return OTP to provider (so they can read it aloud if email fails)
-  new ApiResponse(200, {
-    message: emailSent ? 'OTP sent to customer email' : 'OTP generated but email failed. Please ask customer to check spam or read OTP aloud.',
-    otp: otp,
-    emailSent
-  }, 'OTP generated').send(res);
+  new ApiResponse(200, { message: emailSent ? 'OTP sent to customer email' : 'OTP generated but email failed', otp, emailSent }, 'OTP generated').send(res);
 });
 
-// @desc    Complete service with OTP
-// @route   PATCH /api/v1/bookings/:id/complete
+// @desc    Complete service with OTP (payment remains pending)
 exports.completeService = asyncHandler(async (req, res) => {
   const { completionOTP } = req.body;
   const booking = await Booking.findById(req.params.id);
@@ -536,9 +485,68 @@ exports.completeService = asyncHandler(async (req, res) => {
   booking.timeline.push({ status: 'completed', note: 'Service completed', updatedBy: req.user._id });
   await booking.save();
   await ServiceProvider.findByIdAndUpdate(booking.provider, {
-    $inc: { 'stats.completedBookings': 1, 'stats.totalEarnings': booking.pricing.total }
+    $inc: { 'stats.completedBookings': 1 }
   });
-  new ApiResponse(200, { booking }, 'Service completed').send(res);
+  new ApiResponse(200, { booking }, 'Service completed. Payment is now due.').send(res);
+});
+
+// @desc    Provider marks cash payment received and pays platform fee
+// @route   POST /api/v1/bookings/:id/cash-payment
+exports.markCashPayment = asyncHandler(async (req, res) => {
+  const { amountPaidByCustomer, platformFee } = req.body;
+  const booking = await Booking.findById(req.params.id);
+  if (!booking) throw new ApiError(404, 'Booking not found');
+
+  const provider = await ServiceProvider.findOne({ user: req.user._id });
+  if (!provider || booking.provider.toString() !== provider._id.toString()) {
+    throw new ApiError(403, 'Not authorized');
+  }
+  if (booking.status !== 'completed') {
+    throw new ApiError(400, 'Booking is not completed yet');
+  }
+  if (booking.payment.status === 'paid') {
+    throw new ApiError(400, 'Payment already settled');
+  }
+
+  const totalAmount = booking.pricing.total;
+  const commissionPercentage = await getCommission();
+  const commissionAmount = roundTo2((totalAmount * commissionPercentage) / 100);
+
+  // Deduct platform fee from provider's wallet
+  let wallet = await Wallet.findOne({ user: req.user._id });
+  if (!wallet) wallet = await Wallet.create({ user: req.user._id });
+  if (wallet.balance < commissionAmount) {
+    throw new ApiError(400, `Insufficient wallet balance. Need ₹${commissionAmount} to pay platform fee.`);
+  }
+  wallet.balance = roundTo2(wallet.balance - commissionAmount);
+  wallet.totalWithdrawals = roundTo2(wallet.totalWithdrawals + commissionAmount);
+  wallet.transactions.push({
+    type: 'debit',
+    amount: commissionAmount,
+    description: `Platform fee for booking ${booking.bookingId} (${commissionPercentage}% commission)`,
+    balance: wallet.balance,
+    status: 'completed'
+  });
+  await wallet.save();
+
+  // Update booking payment status – use 'cod' instead of 'cash' (valid enum)
+  booking.payment.status = 'paid';
+  booking.payment.paidAt = new Date();
+  booking.payment.paidAmount = totalAmount;
+  booking.payment.method = 'cod';   // ✅ fixed: 'cod' is valid, not 'cash'
+  booking.timeline.push({
+    status: 'payment_completed',
+    note: `Cash payment received. Platform fee ₹${commissionAmount} deducted from provider wallet.`,
+    updatedBy: req.user._id
+  });
+  await booking.save();
+
+  // Update provider stats total earnings
+  await ServiceProvider.findByIdAndUpdate(booking.provider, {
+    $inc: { 'stats.totalEarnings': totalAmount }
+  });
+
+  new ApiResponse(200, { booking, wallet }, 'Cash payment processed and platform fee deducted').send(res);
 });
 
 // @desc    Reschedule booking

@@ -43,4 +43,7 @@ router.patch('/:id/accept', authorize('provider'), bookingController.acceptBooki
 router.patch('/:id/complete', authorize('provider'), validate([body('completionOTP').notEmpty()]), bookingController.completeService);
 router.post('/:id/generate-otp', authorize('provider'), bookingController.generateCompletionOTP);
 
+// Cash payment with platform fee deduction
+router.post('/:id/cash-payment', authorize('provider'), bookingController.markCashPayment);
+
 module.exports = router;
