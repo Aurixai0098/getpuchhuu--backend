@@ -472,18 +472,82 @@ exports.getAllServices = asyncHandler(async (req, res) => {
 
 // @desc    Create service
 // @route   POST /api/v1/admin/services
+// exports.createService = asyncHandler(async (req, res) => {
+//     const service = await SubService.create(req.body);
+//     new ApiResponse(201, { service }, 'Service created successfully').send(res);
+// });
+
 exports.createService = asyncHandler(async (req, res) => {
-    const service = await SubService.create(req.body);
-    new ApiResponse(201, { service }, 'Service created successfully').send(res);
+    const data = { ...req.body };
+
+    // Admin panel se comma-separated image URLs ko images array mein convert karo
+    if (typeof data.imageUrls === 'string') {
+        data.images = data.imageUrls
+            .split(',')
+            .map(url => url.trim())
+            .filter(Boolean)
+            .map(url => ({
+                url,
+                publicId: '',
+                caption: ''
+            }));
+
+        delete data.imageUrls;
+    }
+
+    const service = await SubService.create(data);
+
+    new ApiResponse(
+        201,
+        { service },
+        'Service created successfully'
+    ).send(res);
 });
+
 
 // @desc    Update service
 // @route   PUT /api/v1/admin/services/:id
+// exports.updateService = asyncHandler(async (req, res) => {
+//     const service = await SubService.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+//     if (!service) throw new ApiError(404, 'Service not found');
+//     new ApiResponse(200, { service }, 'Service updated successfully').send(res);
+// });
+
+
 exports.updateService = asyncHandler(async (req, res) => {
-    const service = await SubService.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
-    if (!service) throw new ApiError(404, 'Service not found');
-    new ApiResponse(200, { service }, 'Service updated successfully').send(res);
+    const data = { ...req.body };
+
+    if (typeof data.imageUrls === 'string') {
+        data.images = data.imageUrls
+            .split(',')
+            .map(url => url.trim())
+            .filter(Boolean)
+            .map(url => ({
+                url,
+                publicId: '',
+                caption: ''
+            }));
+
+        delete data.imageUrls;
+    }
+
+    const service = await SubService.findByIdAndUpdate(
+        req.params.id,
+        data,
+        { new: true, runValidators: true }
+    );
+
+    if (!service) {
+        throw new ApiError(404, 'Service not found');
+    }
+
+    new ApiResponse(
+        200,
+        { service },
+        'Service updated successfully'
+    ).send(res);
 });
+
 
 // @desc    Delete service
 // @route   DELETE /api/v1/admin/services/:id
