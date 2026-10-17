@@ -6,6 +6,10 @@ const connectDB = async () => {
 
     const uri = process.env.MONGODB_URI;
 
+    if (!uri) {
+        throw new Error('MONGODB_URI is not configured');
+    }
+
     try {
         console.log(
             "Mongo URI host:",
@@ -28,7 +32,7 @@ const connectDB = async () => {
 
     try {
         const conn = await mongoose.connect(
-            uri || 'mongodb://localhost:27017/ghar_seva',
+            uri,
             {
                 maxPoolSize: 10,
                 serverSelectionTimeoutMS: 5000,
@@ -53,7 +57,7 @@ const connectDB = async () => {
         return conn;
     } catch (error) {
         console.error('❌ MongoDB connection failed:', error.message);
-        process.exit(1);
+        throw error;
     }
 };
 
