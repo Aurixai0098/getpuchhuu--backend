@@ -27,6 +27,7 @@ const app = express();
 app.set('trust proxy', 1);
 
 const allowedOrigins = [
+    'https://getpuchhuu.vercel.app',
     'https://ghar-seva-client.vercel.app',
     process.env.FRONTEND_URL,
     'http://localhost:5173',
@@ -34,6 +35,7 @@ const allowedOrigins = [
     'http://localhost:5175',
     'http://localhost:3000',
     /^https:\/\/ghar-seva-client-.*\.vercel\.app$/,
+    /^https:\/\/getpuchhuu(?:-[a-z0-9-]+)?\.vercel\.app$/,
 ].filter(Boolean);
 
 app.use(cors({
