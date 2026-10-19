@@ -47,9 +47,40 @@ exports.createOrder = asyncHandler(async (req, res) => {
     const { bookingId } = req.body;
     if (!bookingId) throw new ApiError(400, 'Booking ID is required');
     
+    // const booking = await Booking.findById(bookingId);
+    // if (!booking) throw new ApiError(404, 'Booking not found');
+    // if (booking.payment.status === 'paid') throw new ApiError(400, 'Payment already completed');
     const booking = await Booking.findById(bookingId);
-    if (!booking) throw new ApiError(404, 'Booking not found');
-    if (booking.payment.status === 'paid') throw new ApiError(400, 'Payment already completed');
+
+if (!booking) {
+    throw new ApiError(404, 'Booking not found');
+}
+
+if (booking.customer.toString() !== req.user._id.toString()) {
+    throw new ApiError(403, 'You can only pay for your own booking');
+}
+
+if (booking.payment.status === 'paid') {
+    throw new ApiError(400, 'Payment already completed');
+}
+
+if (booking.status !== 'confirmed') {
+    throw new ApiError(
+        400,
+        'Payment is available only after the provider offer is confirmed'
+    );
+}
+
+if (!booking.provider) {
+    throw new ApiError(
+        400,
+        'Provider must be assigned before payment'
+    );
+}
+
+if (!Number.isFinite(booking.pricing.total) || booking.pricing.total <= 0) {
+    throw new ApiError(400, 'Invalid booking amount');
+}
     
     const roundedTotal = roundTo2(booking.pricing.total);
     const amount = Math.round(roundedTotal * 100); // paise
@@ -61,7 +92,8 @@ exports.createOrder = asyncHandler(async (req, res) => {
         notes: {
             bookingId: booking._id.toString(),
             customerId: req.user._id.toString(),
-            providerId: booking.provider.toString()
+            // providerId: booking.provider.toString()
+            providerId: booking.provider ? booking.provider.toString() : ''
         }
     };
     
