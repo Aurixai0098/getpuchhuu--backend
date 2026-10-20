@@ -3,6 +3,14 @@ const ApiError = require('../utils/ApiError');
 const errorHandler = (err, req, res, next) => {
     let error = { ...err };
     error.message = err.message;
+    if (err.name === 'MulterError') {
+    console.error('MULTER ERROR DETAILS:', {
+        code: err.code,
+        field: err.field,
+        path: req.originalUrl,
+        method: req.method
+    });
+}
 
     // Log error
     console.error('Error:', {
