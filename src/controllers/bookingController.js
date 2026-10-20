@@ -234,9 +234,19 @@ exports.confirmOffer = asyncHandler(async (req, res) => {
   booking.pricing.subtotal = subtotal;
   booking.pricing.taxes = { gst, sgst, cgst: 0 };
   booking.pricing.convenienceFee = convenienceFee;
-  booking.pricing.total = total;
-  booking.status = 'confirmed';
-  booking.providerOffer.status = 'accepted_by_customer';
+  // booking.pricing.total = total;
+  // booking.status = 'confirmed';
+  // booking.providerOffer.status = 'accepted_by_customer';
+
+booking.pricing.total = total;
+
+// Accepted provider offer must be paid online
+booking.payment.method = 'online';
+booking.payment.status = 'pending';
+
+booking.status = 'confirmed';
+booking.providerOffer.status = 'accepted_by_customer';
+
   booking.timeline.push({
     status: 'confirmed',
     note: `Customer accepted provider's offer of ₹${offeredAmount}`,
