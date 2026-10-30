@@ -1,6 +1,7 @@
 // src/app.js
 const express = require('express');
 const cors = require('cors');
+require('dotenv').config();
 const helmet = require('helmet');
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
@@ -8,7 +9,6 @@ const rateLimit = require('express-rate-limit');
 const errorHandler = require('./middleware/errorHandler');
 const ApiError = require('./utils/ApiError');
 
-require('dotenv').config();
 
 const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
@@ -31,7 +31,7 @@ const allowedOrigins = [
     'https://ghar-seva-client.vercel.app',
     process.env.FRONTEND_URL,
     'http://localhost:5173',
-    'http://localhost:5174',
+    'http://localhost:5174', 
     'http://localhost:5175',
     'http://localhost:3000',
     /^https:\/\/ghar-seva-client-.*\.vercel\.app$/,
