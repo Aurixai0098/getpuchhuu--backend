@@ -26,7 +26,20 @@ const cartRoutes = require('./routes/cartRoutes'); // ✅ ADDED
 const app = express();
 app.set('trust proxy', 1);
 
+// ---- Security headers (helmet pehle require ho raha tha par use nahi hota tha) ----
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+
+// ---- Gzip (npm i compression). Install na ho to bina compression chalega ----
+try {
+    // eslint-disable-next-line global-require
+    app.use(require('compression')());
+} catch (e) {
+    console.warn('compression not installed (npm i compression) - responses uncompressed');
+}
+
 const allowedOrigins = [
+    'https://www.puchhuu.com',
+    'https://puchhuu.com',
     'https://getpuchhuu.vercel.app',
     'https://ghar-seva-client.vercel.app',
     process.env.FRONTEND_URL,
@@ -65,28 +78,65 @@ app.use(cors({
 }));
 
 const isDevelopment = process.env.NODE_ENV === 'development';
+const tooMany = (message) => (req, res) =>
+    res.status(429).json({ success: false, message });
+
+// Sab API par general limit (JSON response, taaki frontend .json() na toote)
 const limiter = rateLimit({
     windowMs: 1 * 60 * 1000,
     max: isDevelopment ? 1000 : 200,
-    message: 'Too many requests from this IP, please try again later.'
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: tooMany('Too many requests from this IP, please try again later.')
 });
 app.use('/api', limiter);
+
+// Login / register / password / OTP par sakht limit (brute-force rokne ke liye)
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: isDevelopment ? 1000 : 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    handler: tooMany('Too many attempts. Please try again after 15 minutes.')
+});
+['login', 'register', 'forgot-password', 'reset-password', 'google', 'send-otp', 'verify-otp']
+    .forEach((route) => app.use(`/api/v1/auth/${route}`, authLimiter));
 
 app.post('/api/v1/payments/webhook', express.raw({ type: 'application/json' }), paymentController.webhook);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
+// ---- NoSQL injection roke: { "email": { "$gt": "" } } jaisi keys hata do ----
+const stripMongoOperators = (obj) => {
+    if (!obj || typeof obj !== 'object') return;
+    for (const key of Object.keys(obj)) {
+        if (key.startsWith('$')) delete obj[key];
+        else stripMongoOperators(obj[key]);
+    }
+};
+app.use((req, res, next) => {
+    stripMongoOperators(req.body);
+    stripMongoOperators(req.params);
+    stripMongoOperators(req.query);
+    next();
+});
+
+// ---- Public services/categories GET: browser 1 min cache (repeat visits fast) ----
+app.use('/api/v1/services', (req, res, next) => {
+    if (req.method === 'GET') res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+    next();
+});
+
 if (process.env.NODE_ENV === 'development') app.use(morgan('dev'));
 
 app.get('/api/health', (req, res) => {
+    // Config / environment ki jaankari bahar nahi dikhani
     res.status(200).json({
         status: 'success',
-        message: 'Ghar Seva API is running',
-        timestamp: new Date().toISOString(),
-        razorpayConfigured: !!process.env.RAZORPAY_KEY_ID && !!process.env.RAZORPAY_KEY_SECRET,
-        corsAllowed: true,
-        environment: process.env.NODE_ENV
+        message: 'API is running',
+        timestamp: new Date().toISOString()
     });
 });
 
